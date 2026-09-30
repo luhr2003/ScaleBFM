@@ -83,7 +83,7 @@ class MotionTrackingEnv(BaseEnv):
             
             # weishuai: We do not use RSI but adjust motion based on the current state;
             logger.info(f"[Env] Adjusting the xy-offset of offline trajectories ...")
-            pos_offset = self.body_pos_w[0,0]
+            pos_offset = self.body_pos_w[0,0].clone() # a view would zero the first frame's pelvis height below
             pos_offset[..., -1] = 0
 
             logger.info(f"[Env] Adjusting the heading direction of offline trajectories ...")
