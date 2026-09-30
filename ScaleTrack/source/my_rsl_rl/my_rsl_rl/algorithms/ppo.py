@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -34,6 +36,9 @@ class PPO:
         schedule: str = "adaptive",
         desired_kl: float = 0.01,
         device: str = "cpu",
+        # Fine-tuning options (all off by default: the original training recipe is unchanged)
+        anchor_coef: float = 0.0,
+        actor_freeze_iters: int = 0,
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
         **kwargs,
@@ -76,6 +81,31 @@ class PPO:
         self.schedule = schedule
         self.actor_learning_rate = actor_learning_rate
         self.critic_learning_rate = critic_learning_rate
+
+        # Anchor to a frozen reference policy: penalise KL(pi_ref || pi) on the flat-rehearsal samples (obs group "group" == 0)
+        self.anchor_coef = anchor_coef
+        self.anchor_policy = None
+        self.actor_freeze_iters = actor_freeze_iters
+        self.actor_frozen = False
+        self.num_skipped_updates = 0
+
+    def set_anchor(self, checkpoint: str | None = None) -> None:
+        """Freeze the reference policy of the anchor loss: the weights in `checkpoint` if given (always use this when a
+        run may be resumed from its own checkpoints), otherwise a copy of the current policy."""
+        self.anchor_policy = copy.deepcopy(self.policy)
+        if checkpoint:
+            state = torch.load(checkpoint, map_location=self.device, weights_only=False)["model_state_dict"]
+            self.anchor_policy.load_state_dict(state)
+        self.anchor_policy.eval()
+        for p in self.anchor_policy.parameters():
+            p.requires_grad_(False)
+
+    def apply_learning_rates(self) -> None:
+        """Write the configured learning rates into the optimizers (a resumed checkpoint carries the old ones)."""
+        for g in self.actor_optimizer.param_groups:
+            g["lr"] = self.actor_learning_rate
+        for g in self.critic_optimizer.param_groups:
+            g["lr"] = self.critic_learning_rate
 
     def init_storage(
         self,
@@ -136,6 +166,7 @@ class PPO:
         mean_value_loss = 0
         mean_surrogate_loss = 0
         mean_entropy = 0
+        mean_anchor_kl = 0
 
         generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
 
@@ -226,18 +257,69 @@ class PPO:
 
             loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_batch.mean()
 
+            if self.anchor_policy is not None and self.anchor_coef > 0.0:
+                with torch.no_grad():
+                    self.anchor_policy.act(obs_batch)  # sets the reference distribution (mask/mode handled inside)
+                    mu_ref = self.anchor_policy.action_mean[:original_batch_size]
+                    sigma_ref = self.anchor_policy.action_std[:original_batch_size]
+                kl_ref = (
+                    torch.log(sigma_batch / sigma_ref)
+                    + (torch.square(sigma_ref) + torch.square(mu_ref - mu_batch)) / (2.0 * torch.square(sigma_batch))
+                    - 0.5
+                ).sum(dim=-1)
+                if "group" in obs_batch.keys():
+                    flat_mask = (obs_batch["group"][:, 0] < 0.5).float()
+                else:
+                    flat_mask = torch.ones_like(kl_ref)
+                anchor_kl = (kl_ref * flat_mask).sum() / flat_mask.sum().clamp_min(1.0)
+                loss = loss + self.anchor_coef * anchor_kl
+                mean_anchor_kl += anchor_kl.item()
+
             # Compute the gradients for PPO
             self.actor_optimizer.zero_grad()
             self.critic_optimizer.zero_grad()
             loss.backward()
 
+            if os.environ.get("PPO_DEBUG_NONFINITE") and self.num_skipped_updates < 3:
+                bad = [n for n, p in self.policy.named_parameters() if p.grad is not None and not torch.isfinite(p.grad).all()]
+                nograd = [n for n, p in self.policy.named_parameters() if p.grad is None]
+                print(f"[PPO-debug rank {self.gpu_global_rank}] before reduce: non-finite grads in {bad[:8]} ({len(bad)}), params without grad: {nograd[:8]} ({len(nograd)})", flush=True)
+                if bad:
+                    for key in ("critic", "critic_task", "action", "policy", "policy_task"):
+                        x = obs_batch[key]
+                        print(f"[PPO-debug rank {self.gpu_global_rank}] obs[{key}] finite={bool(torch.isfinite(x).all())} max|x|={x.abs().max().item():.4g} "
+                              f"argmax sample={int(x.abs().reshape(x.shape[0], -1).amax(1).argmax())}", flush=True)
+                    print(f"[PPO-debug rank {self.gpu_global_rank}] returns max {returns_batch.abs().max().item():.4g} values max {target_values_batch.abs().max().item():.4g} value_batch max {value_batch.abs().max().item():.4g}", flush=True)
+                    if not getattr(self, "_debug_located", False) and not torch.isfinite(value_batch).all():
+                        self._debug_located = True
+                        self._debug_locate_nan(obs_batch)
+
             # Collect gradients from all GPUs
             if self.is_multi_gpu:
                 self.reduce_parameters()
 
-            # Apply the gradients for PPO
-            nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
-            self.actor_optimizer.step()
+            if os.environ.get("PPO_DEBUG_NONFINITE") and self.num_skipped_updates < 3:
+                bad = [n for n, p in self.policy.named_parameters() if p.grad is not None and not torch.isfinite(p.grad).all()]
+                print(f"[PPO-debug rank {self.gpu_global_rank}] after reduce: non-finite grads in {bad[:8]} ({len(bad)})", flush=True)
+
+            # Apply the gradients for PPO. A non-finite gradient (norm computed AFTER the multi-GPU reduction, so all ranks take the
+            # same decision) would turn the parameters into NaN for good: skip that minibatch instead and say why.
+            grad_norm = nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+            if not torch.isfinite(grad_norm):
+                self.num_skipped_updates += 1
+                if self.num_skipped_updates <= 20 and self.gpu_global_rank == 0:
+                    print(
+                        f"[PPO] skipped a minibatch with non-finite gradients (total {self.num_skipped_updates}): "
+                        f"loss {loss.item():.4g} surrogate {surrogate_loss.item():.4g} value {value_loss.item():.4g} "
+                        f"mu finite {bool(torch.isfinite(mu_batch).all())} sigma [{sigma_batch.min().item():.4g}, {sigma_batch.max().item():.4g}] "
+                        f"ratio max {ratio.max().item():.4g} adv finite {bool(torch.isfinite(advantages_batch).all())}",
+                        flush=True,
+                    )
+                self.actor_optimizer.zero_grad()
+                self.critic_optimizer.zero_grad()
+                continue
+            if not self.actor_frozen:
+                self.actor_optimizer.step()
             self.critic_optimizer.step()
 
             # Store the losses
@@ -250,6 +332,12 @@ class PPO:
         mean_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
         mean_entropy /= num_updates
+        mean_anchor_kl /= num_updates
+
+        if os.environ.get("PPO_DEBUG_NONFINITE") and self.is_multi_gpu:
+            lo, hi, own = self._param_checksum_spread()
+            if self.gpu_global_rank == 0:
+                print(f"[PPO-debug] parameter checksum across ranks after update: min {lo.item():.9g} max {hi.item():.9g}", flush=True)
 
         # Clear the storage
         self.storage.clear()
@@ -260,17 +348,106 @@ class PPO:
             "surrogate": mean_surrogate_loss,
             "entropy": mean_entropy,
         }
+        if self.anchor_policy is not None and self.anchor_coef > 0.0:
+            loss_dict["anchor_kl"] = mean_anchor_kl
+        loss_dict["skipped_updates_total"] = float(self.num_skipped_updates)
 
         return loss_dict
 
+    def _debug_locate_nan(self, obs_batch) -> None:
+        """Debug helper (PPO_DEBUG_NONFINITE): find where a non-finite critic output comes from and whether the CUDA device matters."""
+        import copy
+
+        param_device = next(self.policy.parameters()).device
+        report = []
+
+        def make_hook(name):
+            def hook(module, inputs, output):
+                outs = [output] if torch.is_tensor(output) else [o for o in (output if isinstance(output, (tuple, list)) else []) if torch.is_tensor(o)]
+                for o in outs:
+                    if o.is_floating_point() and not torch.isfinite(o).all() and len(report) < 4:
+                        ins = [bool(torch.isfinite(i).all()) for i in inputs if torch.is_tensor(i) and i.is_floating_point()]
+                        report.append(f"{name}({type(module).__name__}) out-device {o.device} inputs-finite {ins}")
+                        break
+            return hook
+
+        hooks = [m.register_forward_hook(make_hook(n)) for n, m in self.policy.named_modules()]
+        try:
+            with torch.no_grad():
+                v_nograd = self.policy.evaluate(obs_batch)
+            first_modules = list(report)
+            with torch.no_grad(), torch.cuda.device(param_device):
+                v_guard = self.policy.evaluate(obs_batch)
+        finally:
+            for h in hooks:
+                h.remove()
+        print(
+            f"[PPO-debug rank {self.gpu_global_rank}] locate: current_device {torch.cuda.current_device()} param device {param_device} "
+            f"obs devices {sorted({str(v.device) for v in obs_batch.values()})} | critic finite: no_grad {bool(torch.isfinite(v_nograd).all())}, "
+            f"with device guard {bool(torch.isfinite(v_guard).all())} | first non-finite modules: {first_modules}",
+            flush=True,
+        )
+        try:
+            with torch.no_grad():
+                critic = copy.deepcopy(self.policy.critic).cpu()
+                embedder = copy.deepcopy(self.policy.critic_task_embedder).cpu()
+                cpu_obs = obs_batch.to("cpu")
+                prop_obs, task_obs, action_obs = self.policy.get_critic_obs(cpu_obs)
+                v_cpu = critic(prop_obs, action_obs, embedder(task_obs))
+            print(f"[PPO-debug rank {self.gpu_global_rank}] locate: cpu copy of the critic finite {bool(torch.isfinite(v_cpu).all())}, max {v_cpu.abs().max().item():.4g}", flush=True)
+        except Exception as exc:  # debugging aid only
+            print(f"[PPO-debug rank {self.gpu_global_rank}] locate: cpu check failed: {exc!r}", flush=True)
+
     def broadcast_parameters(self) -> None:
-        """Broadcast model parameters to all GPUs."""
-        # Obtain the model parameters on current GPU
-        model_params = [self.policy.state_dict()]
-        # Broadcast the model parameters
-        torch.distributed.broadcast_object_list(model_params, src=0)
-        # Load the model parameters on all GPUs from source GPU
-        self.policy.load_state_dict(model_params[0])
+        """Broadcast model parameters (and buffers) of rank 0 to all GPUs.
+
+        Every tensor is broadcast in place with NCCL on the rank's own device. The former implementation pickled the CUDA state_dict
+        (`broadcast_object_list`): the unpickled tensors land on rank 0's device (cuda:0) and `load_state_dict` then copies GPU->GPU,
+        which silently yields all-zero tensors on machines with broken peer-to-peer access (IOMMU): every rank but 0 trained a zeroed policy.
+        """
+        for tensor in self.policy.state_dict().values():
+            if not torch.is_tensor(tensor):
+                continue
+            if tensor.is_contiguous():
+                torch.distributed.broadcast(tensor, src=0)
+            else:
+                tmp = tensor.contiguous()
+                torch.distributed.broadcast(tmp, src=0)
+                tensor.copy_(tmp)
+        # Sanity check: all ranks must now hold identical, finite parameters.
+        lo, hi, own = self._param_checksum_spread()
+        if not (torch.isfinite(lo) and torch.isfinite(hi) and lo.item() == hi.item()):
+            raise RuntimeError(f"[PPO] parameters differ across ranks after broadcast (checksum min {lo.item()}, max {hi.item()}, rank {self.gpu_global_rank}: {own.item()})")
+        if self.gpu_global_rank == 0:
+            print(f"[PPO] parameters synchronized across {self.gpu_world_size} ranks (checksum {own.item():.6f})", flush=True)
+
+    def _gathered_checksums(self, own: torch.Tensor) -> torch.Tensor:
+        """All ranks' scalar checksums as a (world_size,) float64 tensor. Done with a SUM all_reduce on purpose: NCCL MIN/MAX ignore
+        NaN, so a rank holding NaN parameters would go unnoticed."""
+        gathered = torch.zeros(self.gpu_world_size, dtype=torch.float64, device=own.device)
+        gathered[self.gpu_global_rank] = own
+        torch.distributed.all_reduce(gathered, op=torch.distributed.ReduceOp.SUM)
+        return gathered
+
+    def _param_checksum_spread(self):
+        """(min over ranks, max over ranks, own) of the sum of all policy parameters and buffers, in float64 (NaN propagates)."""
+        own = torch.stack([p.detach().double().sum() for p in self.policy.state_dict().values() if torch.is_tensor(p)]).sum()
+        gathered = self._gathered_checksums(own)
+        return gathered.min(), gathered.max(), own
+
+    def check_optimizer_sync(self) -> None:
+        """All ranks must hold the same, finite optimizer state (Adam moments and step counters) after a resume."""
+        own = torch.zeros((), dtype=torch.float64, device=self.device)
+        for opt in (self.actor_optimizer, self.critic_optimizer):
+            for state in opt.state.values():
+                for value in state.values():
+                    if torch.is_tensor(value):
+                        own = own + value.detach().double().sum().to(self.device)
+        gathered = self._gathered_checksums(own)
+        if not (torch.isfinite(gathered).all() and gathered.min().item() == gathered.max().item()):
+            raise RuntimeError(f"[PPO] optimizer state differs across ranks or is not finite after loading the checkpoint: {gathered.tolist()}")
+        if self.gpu_global_rank == 0:
+            print(f"[PPO] optimizer state identical across {self.gpu_world_size} ranks (checksum {own.item():.6g})", flush=True)
 
     def reduce_parameters(self) -> None:
         """Collect gradients from all GPUs and average them.

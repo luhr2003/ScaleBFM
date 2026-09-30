@@ -50,7 +50,7 @@ simulation_app = app_launcher.app
 import gymnasium as gym
 import os
 import torch
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from isaaclab.envs import (
     DirectMARLEnv,
@@ -109,7 +109,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         assert gpu_world_size > 1, f"You have enabled distributed training but there is only {gpu_world_size} GPUs detected!"
         
         # weishuai: We init communication at the very beginning instead of the runner as the initialization of some environment components may need sync.
-        torch.distributed.init_process_group(backend="nccl", rank=gpu_global_rank, world_size=gpu_world_size)
+        # The NCCL communicator is created lazily at the first collective (the barrier while rank 0 loads the motion library).
+        # A large library takes rank 0 longer than the default 10 min, so the other ranks would time out: use a long timeout.
+        torch.distributed.init_process_group(
+            backend="nccl", rank=gpu_global_rank, world_size=gpu_world_size, timeout=timedelta(minutes=120)
+        )
         torch.cuda.set_device(gpu_local_rank)
 
     # specify directory for logging experiments
@@ -156,7 +160,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
         # load previously trained model
-        runner.load(resume_path)
+        # map_location: the checkpoint's CUDA tensors would otherwise be restored on cuda:0 and moved to this rank's GPU by a GPU->GPU copy,
+        # which silently yields zeros on machines with broken peer-to-peer access
+        runner.load(resume_path, map_location=agent_cfg.device)
 
     # run training
     runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)

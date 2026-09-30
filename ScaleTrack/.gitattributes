@@ -24,3 +24,4 @@ source/scaletrack/scaletrack/assets/robots/g1_29dof/configuration/g1_physics.usd
 source/scaletrack/scaletrack/assets/robots/g1_29dof/configuration/g1_robot.usd -filter -diff -merge -text
 source/scaletrack/scaletrack/assets/robots/g1_29dof/configuration/g1_sensor.usd -filter -diff -merge -text
 source/scaletrack/scaletrack/assets/robots/g1_29dof/meshes/half_sphere.obj -filter -diff -merge -text
+source/scaletrack/scaletrack/assets/robots/g1_29dof_discfeet/g1_29dof_discfeet.usda -filter -diff -merge -text

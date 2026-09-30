@@ -2,6 +2,8 @@ from __future__ import annotations
 import yaml
 import math
 import os
+import json
+import hashlib
 import torch
 import pickle
 import numpy as np
@@ -58,7 +60,30 @@ def load_motion_data_worker(args):
         print(f"Error loading {name}: {e}")
         return None
 
+_CACHE_KEYS = ["joint_pos", "joint_vel", "body_pos_w", "body_quat_w", "body_lin_vel_w", "body_ang_vel_w", "time_step_total"]
+
+
+def _motion_cache_dir(motions: dict, body_indexes: Sequence[int]):
+    """Directory of the on-disk cache of the concatenated motion library (None when SCALETRACK_MOTION_CACHE is unset).
+
+    Concatenating ~10^5 clips takes many minutes at every launch; with the cache a relaunch only reads a few large .npy
+    files. The key covers the ordered clip list and the selected bodies (file contents are assumed not to change).
+    """
+    root = os.environ.get("SCALETRACK_MOTION_CACHE")
+    if not root:
+        return None
+    key = hashlib.md5((json.dumps(list(motions.items())) + str([int(i) for i in body_indexes])).encode()).hexdigest()[:16]
+    return os.path.join(root, key)
+
+
 def load_motions_np(motions: dict, body_indexes: Sequence[int]):
+
+    cache_dir = _motion_cache_dir(motions, body_indexes)
+    if cache_dir and os.path.exists(os.path.join(cache_dir, "DONE")):
+        print(f"Loading the motion library from the cache {cache_dir}", flush=True)
+        names = json.load(open(os.path.join(cache_dir, "names.json")))
+        arrays = [np.load(os.path.join(cache_dir, f"{k}.npy")) for k in _CACHE_KEYS]
+        return (names, *arrays)
 
     motion_count = len(motions)
     motion_items = [(i, name, path, body_indexes) for i, (name, path) in enumerate(motions.items())]
@@ -103,6 +128,16 @@ def load_motions_np(motions: dict, body_indexes: Sequence[int]):
         raise e
 
     del joint_pos, joint_vel, body_pos_w, body_quat_w, body_lin_vel_w, body_ang_vel_w, time_step_total
+
+    if cache_dir:
+        os.makedirs(cache_dir + ".tmp", exist_ok=True)
+        for k, arr in zip(_CACHE_KEYS, (joint_pos_np, joint_vel_np, body_pos_w_np, body_quat_w_np, body_lin_vel_w_np,
+                                        body_ang_vel_w_np, time_step_total_np)):
+            np.save(os.path.join(cache_dir + ".tmp", f"{k}.npy"), arr)
+        json.dump(names, open(os.path.join(cache_dir + ".tmp", "names.json"), "w"))
+        open(os.path.join(cache_dir + ".tmp", "DONE"), "w").close()
+        os.rename(cache_dir + ".tmp", cache_dir)
+        print(f"Saved the motion library cache to {cache_dir}", flush=True)
 
     return names, joint_pos_np, joint_vel_np, body_pos_w_np, body_quat_w_np, body_lin_vel_w_np, body_ang_vel_w_np, time_step_total_np
 

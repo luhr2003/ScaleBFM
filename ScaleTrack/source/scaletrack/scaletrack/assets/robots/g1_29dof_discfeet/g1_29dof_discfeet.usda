@@ -1,0 +1,215 @@
+#usda 1.0
+(
+    defaultPrim = "g1_sphere_capsule_complex"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "g1_sphere_capsule_complex" (
+    prepend references = @../g1_29dof/g1_29dof.usda@
+)
+{
+    over "pelvis"
+    {
+        over "left_ankle_roll_link"
+        {
+            over "collisions" (
+                instanceable = false
+            )
+            {
+                over "left_foot1_collision" (
+                    active = false
+                )
+                {
+                }
+
+                over "left_foot7_collision" (
+                    active = false
+                )
+                {
+                }
+
+                over "left_foot2_collision"
+                {
+                    over "left_foot2_collision" (
+                        prepend apiSchemas = ["PhysicsCollisionAPI"]
+                    )
+                    {
+                        bool physics:collisionEnabled = 0
+                    }
+                }
+
+                over "left_foot3_collision"
+                {
+                    over "left_foot3_collision" (
+                        prepend apiSchemas = ["PhysicsCollisionAPI"]
+                    )
+                    {
+                        bool physics:collisionEnabled = 0
+                    }
+                }
+
+                over "left_foot4_collision"
+                {
+                    over "left_foot4_collision" (
+                        prepend apiSchemas = ["PhysicsCollisionAPI"]
+                    )
+                    {
+                        bool physics:collisionEnabled = 0
+                    }
+                }
+
+                over "left_foot5_collision"
+                {
+                    over "left_foot5_collision" (
+                        prepend apiSchemas = ["PhysicsCollisionAPI"]
+                    )
+                    {
+                        bool physics:collisionEnabled = 0
+                    }
+                }
+
+                over "left_foot6_collision"
+                {
+                    over "left_foot6_collision" (
+                        prepend apiSchemas = ["PhysicsCollisionAPI"]
+                    )
+                    {
+                        bool physics:collisionEnabled = 0
+                    }
+                }
+
+                def Xform "left_foot_disc_front"
+                {
+                    double3 xformOp:translate = (0.1089, 0.0001, -0.0275)
+                    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+                    def Cylinder "left_foot_disc_front" (
+                        prepend apiSchemas = ["PhysicsCollisionAPI"]
+                    )
+                    {
+                        uniform token axis = "Z"
+                        double height = 0.015
+                        double radius = 0.033
+                    }
+                }
+
+                def Xform "left_foot_disc_rear"
+                {
+                    double3 xformOp:translate = (-0.0355, 0.0002, -0.0275)
+                    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+                    def Cylinder "left_foot_disc_rear" (
+                        prepend apiSchemas = ["PhysicsCollisionAPI"]
+                    )
+                    {
+                        uniform token axis = "Z"
+                        double height = 0.015
+                        double radius = 0.03
+                    }
+                }
+            }
+        }
+
+        over "right_ankle_roll_link"
+        {
+            over "collisions" (
+                instanceable = false
+            )
+            {
+                over "right_foot1_collision" (
+                    active = false
+                )
+                {
+                }
+
+                over "right_foot7_collision" (
+                    active = false
+                )
+                {
+                }
+
+                over "right_foot2_collision"
+                {
+                    over "right_foot2_collision" (
+                        prepend apiSchemas = ["PhysicsCollisionAPI"]
+                    )
+                    {
+                        bool physics:collisionEnabled = 0
+                    }
+                }
+
+                over "right_foot3_collision"
+                {
+                    over "right_foot3_collision" (
+                        prepend apiSchemas = ["PhysicsCollisionAPI"]
+                    )
+                    {
+                        bool physics:collisionEnabled = 0
+                    }
+                }
+
+                over "right_foot4_collision"
+                {
+                    over "right_foot4_collision" (
+                        prepend apiSchemas = ["PhysicsCollisionAPI"]
+                    )
+                    {
+                        bool physics:collisionEnabled = 0
+                    }
+                }
+
+                over "right_foot5_collision"
+                {
+                    over "right_foot5_collision" (
+                        prepend apiSchemas = ["PhysicsCollisionAPI"]
+                    )
+                    {
+                        bool physics:collisionEnabled = 0
+                    }
+                }
+
+                over "right_foot6_collision"
+                {
+                    over "right_foot6_collision" (
+                        prepend apiSchemas = ["PhysicsCollisionAPI"]
+                    )
+                    {
+                        bool physics:collisionEnabled = 0
+                    }
+                }
+
+                def Xform "right_foot_disc_front"
+                {
+                    double3 xformOp:translate = (0.1089, -0.0001, -0.0275)
+                    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+                    def Cylinder "right_foot_disc_front" (
+                        prepend apiSchemas = ["PhysicsCollisionAPI"]
+                    )
+                    {
+                        uniform token axis = "Z"
+                        double height = 0.015
+                        double radius = 0.033
+                    }
+                }
+
+                def Xform "right_foot_disc_rear"
+                {
+                    double3 xformOp:translate = (-0.0355, -0.0002, -0.0275)
+                    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+                    def Cylinder "right_foot_disc_rear" (
+                        prepend apiSchemas = ["PhysicsCollisionAPI"]
+                    )
+                    {
+                        uniform token axis = "Z"
+                        double height = 0.015
+                        double radius = 0.03
+                    }
+                }
+            }
+        }
+    }
+}
+

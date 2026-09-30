@@ -89,19 +89,29 @@ class OnPolicyRunner:
         ep_infos = []
         rewbuffer = deque(maxlen=100)
         lenbuffer = deque(maxlen=100)
+        # per env-group statistics (0 = flat rehearsal envs, 1 = terrain envs); only filled if the env has a "group" obs
+        rewbuffer_g = {0: deque(maxlen=200), 1: deque(maxlen=200)}
+        lenbuffer_g = {0: deque(maxlen=200), 1: deque(maxlen=200)}
         cur_reward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
         cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
+
+        if os.environ.get("PPO_DEBUG_NONFINITE"):
+            for opt_name, opt in (("actor", self.alg.actor_optimizer), ("critic", self.alg.critic_optimizer)):
+                tot = sum(float(v.abs().sum()) for st in opt.state.values() for v in st.values() if torch.is_tensor(v) and v.is_floating_point() and v.dim() > 0)
+                print(f"[runner-debug rank {self.gpu_global_rank}] {opt_name} optimizer state |sum| {tot:.6g} ({len(opt.state)} tensors with state)", flush=True)
 
         # Ensure all parameters are in-synced
         if self.is_distributed:
             print(f"Synchronizing parameters for rank {self.gpu_global_rank}...")
             self.alg.broadcast_parameters()
+            self.alg.check_optimizer_sync()
 
         # Start training
         start_iter = self.current_learning_iteration
         tot_iter = start_iter + num_learning_iterations
         for it in range(start_iter, tot_iter):
 
+            self.alg.actor_frozen = (it - start_iter) < getattr(self.alg, "actor_freeze_iters", 0)
             start = time.time()
             # Rollout
             with torch.inference_mode():
@@ -128,6 +138,13 @@ class OnPolicyRunner:
                         new_ids = (dones > 0).nonzero(as_tuple=False)
                         rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
                         lenbuffer.extend(cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
+                        if "group" in obs.keys() and len(new_ids) > 0:
+                            grp = (obs["group"][new_ids[:, 0], 0] > 0.5).long().cpu().numpy()
+                            rew_new = cur_reward_sum[new_ids[:, 0]].cpu().numpy()
+                            len_new = cur_episode_length[new_ids[:, 0]].cpu().numpy()
+                            for g in (0, 1):
+                                rewbuffer_g[g].extend(rew_new[grp == g].tolist())
+                                lenbuffer_g[g].extend(len_new[grp == g].tolist())
                         cur_reward_sum[new_ids] = 0
                         cur_episode_length[new_ids] = 0
                         
@@ -140,6 +157,24 @@ class OnPolicyRunner:
 
             # Update policy
             loss_dict = self.alg.update()
+
+            # The ranks apply identical reduced gradients, but tiny non-deterministic differences could still make their copies drift
+            # apart over thousands of iterations: report the drift and re-broadcast rank 0's parameters every 50 iterations.
+            if self.is_distributed and (it + 1) % 50 == 0:
+                lo, hi, _ = self.alg._param_checksum_spread()
+                if self.gpu_global_rank == 0 and lo.item() != hi.item():
+                    print(f"[runner] iteration {it}: parameter checksum drift across ranks {hi.item() - lo.item():.3e}, resynchronizing", flush=True)
+                self.alg.broadcast_parameters()
+
+            # Only rank 0 logs, so report every rank's own rollout statistics now and then: a rank with broken data or state would
+            # otherwise hide behind the healthy rank 0 (all_reduce SUM of a per-rank table; NaN marks a rank without finished episodes yet)
+            if self.is_distributed and (it + 1) % 10 == 0:
+                own = [statistics.mean(rewbuffer) if len(rewbuffer) > 0 else float("nan"), statistics.mean(lenbuffer) if len(lenbuffer) > 0 else float("nan")]
+                table = torch.zeros(self.gpu_world_size, 2, dtype=torch.float64, device=self.device)
+                table[self.gpu_global_rank] = torch.tensor(own, dtype=torch.float64, device=self.device)
+                torch.distributed.all_reduce(table, op=torch.distributed.ReduceOp.SUM)
+                if self.gpu_global_rank == 0:
+                    print(f"[runner] iteration {it}: per-rank mean episode reward {[round(v, 2) for v in table[:, 0].tolist()]}, length {[round(v, 1) for v in table[:, 1].tolist()]}", flush=True)
 
             stop = time.time()
             learn_time = stop - start
@@ -247,6 +282,11 @@ class OnPolicyRunner:
                     "Train/mean_episode_length/time", statistics.mean(locs["lenbuffer"]), self.tot_time
                 )
 
+        for g, gname in ((0, "flat"), (1, "terrain")):
+            if len(locs["rewbuffer_g"][g]) > 0:
+                self.writer.add_scalar(f"Train/mean_reward_{gname}", statistics.mean(locs["rewbuffer_g"][g]), locs["it"])
+                self.writer.add_scalar(f"Train/mean_episode_length_{gname}", statistics.mean(locs["lenbuffer_g"][g]), locs["it"])
+
         str = f" \033[1m Learning iteration {locs['it']}/{locs['tot_iter']} \033[0m "
 
         if len(locs["rewbuffer"]) > 0:
@@ -264,6 +304,12 @@ class OnPolicyRunner:
             log_string += f"""{"Mean reward:":>{pad}} {statistics.mean(locs["rewbuffer"]):.2f}\n"""
             # Print episode information
             log_string += f"""{"Mean episode length:":>{pad}} {statistics.mean(locs["lenbuffer"]):.2f}\n"""
+            for g, gname in ((0, "flat"), (1, "terrain")):
+                if len(locs["rewbuffer_g"][g]) > 0:
+                    log_string += (
+                        f"""{f"Mean reward / ep length ({gname}):":>{pad}} """
+                        f"""{statistics.mean(locs["rewbuffer_g"][g]):.2f} / {statistics.mean(locs["lenbuffer_g"][g]):.1f}\n"""
+                    )
         else:
             log_string = (
                 f"""{"#" * width}\n"""
@@ -322,6 +368,12 @@ class OnPolicyRunner:
         # Load current learning iteration
         if resumed_training:
             self.current_learning_iteration = loaded_dict["iter"]
+        # Fine-tuning: the checkpoint carries the learning rates it ended with; use the configured ones instead
+        if self.alg_cfg.get("override_loaded_lr", False):
+            self.alg.apply_learning_rates()
+        # Fine-tuning: the loaded policy is the reference of the anchor loss
+        if getattr(self.alg, "anchor_coef", 0.0) > 0.0:
+            self.alg.set_anchor(self.alg_cfg.get("anchor_checkpoint", "") or None)
         return loaded_dict["infos"]
 
     def get_inference_policy(self, device: str | None = None) -> callable:

@@ -71,3 +71,45 @@ class G1BFMMlpPPORunnerCfg(G1BFMTransformerPPORunnerCfg):
         activation="elu",
         state_dependent_std=False, # weishuai: DoubleHead
     )
+
+@configclass
+class CompleteFinetuneAlgorithmCfg(CompleteRslRlPpoAlgorithmCfg):
+    anchor_coef: float = 0.0
+    """Weight of KL(pi_ref || pi) on the flat rehearsal samples (pi_ref = the checkpoint the run resumes from)."""
+    anchor_checkpoint: str = ""
+    """Checkpoint whose policy is the anchor reference (empty: the policy loaded when the run is resumed)."""
+    actor_freeze_iters: int = 0
+    """Number of initial iterations in which only the critic is trained."""
+    override_loaded_lr: bool = False
+    """Use the configured learning rates instead of those stored in the resumed checkpoint."""
+
+
+@configclass
+class G1BFMTransformerFinetunePPORunnerCfg(G1BFMTransformerPPORunnerCfg):
+    """Fine-tuning of a pretrained BFM on terrain while rehearsing flat tracking (see scalebfm_terrain_training_plan.md).
+
+    The pretraining run ended with an adaptive actor lr of 8.6e-4; here the actor lr is small and fixed, the critic is
+    warmed up first, and an anchor loss keeps the actor close to the pretrained policy on flat clips.
+    """
+
+    max_iterations = 6000
+    save_interval = 250
+    eval_during_training = False
+    algorithm = CompleteFinetuneAlgorithmCfg(
+        value_loss_coef=1.0,
+        use_clipped_value_loss=True,
+        clip_param=0.2,
+        entropy_coef=0.001,
+        num_learning_epochs=2,
+        num_mini_batches=32,
+        actor_learning_rate=2.0e-5,
+        critic_learning_rate=3.0e-4,
+        schedule="fixed",
+        gamma=0.99,
+        lam=0.95,
+        desired_kl=0.01,
+        max_grad_norm=1.0,
+        anchor_coef=1.0,
+        actor_freeze_iters=200,
+        override_loaded_lr=True,
+    )
