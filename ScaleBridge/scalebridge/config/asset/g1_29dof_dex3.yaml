@@ -10,10 +10,7 @@ state_decoder:
 command_encoder:
   _target_: third_party.unitree_sdk2.robot_controller.g1_29dof_dex3.lcm_types.robot_cmd_lcmt.robot_cmd_lcmt
 
-localization_module:
-  _target_: scalebridge.utils.vive_tracker.online_client.ViveTrackerOnlineClient
-  host: 0.0.0.0
-  port: 5000
+localization_module: ${localization}  # selected with localization=legged_estimator|vive_tracker
 
 real_joint_names: [
     "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint",

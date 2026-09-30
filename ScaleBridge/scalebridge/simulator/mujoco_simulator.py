@@ -31,6 +31,7 @@ class MujocoSimulator(BaseSimulator):
         self.marker = config.get('marker', False)
         self.use_joystick = config.get('joystick', False)
         self.camera_follow = config.get('camera_follow', False) or self.record_video
+        self.estimate_root_pos = config.get('estimate_root_pos', False)
 
         super().__init__(config, metadata_dict)
 
@@ -72,6 +73,58 @@ class MujocoSimulator(BaseSimulator):
         self.default_qvel = self.mujoco_data.qvel.copy()
 
         self.default_dof_pos = self.mujoco_data.qpos[7:7+self.num_joints].copy()
+
+        self.root_estimator = None
+        if self.estimate_root_pos and self.metadata_dict.get("enable_root_localization", False):
+            self._setup_root_estimator()
+
+    def _setup_root_estimator(self):
+        # Run the onboard state estimator on simulated sensors so global tracking can be checked without ground truth.
+        from scalebridge.utils.legged_estimator import LeggedStateEstimator
+
+        localization_cfg = self.cfg.asset.localization_module
+        assert "estimator" in localization_cfg, "simulator.config.estimate_root_pos requires localization=legged_estimator."
+        self.root_estimator = LeggedStateEstimator(**localization_cfg.estimator)
+
+        sim_joint_names = self._get_joint_names()
+        self.estimator_joint_idx = np.array([sim_joint_names.index(name) for name in self.root_estimator.joint_names], dtype=np.int64)
+        self.imu_site_id = mujoco.mj_name2id(self.mujoco_model, mujoco.mjtObj.mjOBJ_SITE, self.cfg.get('imu_site', 'imu_in_pelvis'))
+        self.imu_acc = np.zeros(6)
+        self.root_pos_offset = np.zeros(3)
+        self.estimator_log_counter = 0
+        logger.info(f'[Simulator] Root position comes from the legged state estimator instead of the ground truth.')
+
+    def _update_root_estimator(self, qpos, qvel):
+        # mj_step integrates qpos/qvel but leaves kinematics, accelerations and actuator forces at the pre-step state,
+        # so the accelerometer reading (specific force at the IMU site, IMU frame) pairs with the qpos/qvel sampled before it.
+        mujoco.mj_rnePostConstraint(self.mujoco_model, self.mujoco_data)
+        mujoco.mj_objectAcceleration(self.mujoco_model, self.mujoco_data, mujoco.mjtObj.mjOBJ_SITE, self.imu_site_id, self.imu_acc, 1)
+        joint_idx = self.estimator_joint_idx
+        self.root_estimator.update(
+            self.low_dt,
+            qpos[7:7+self.num_joints][joint_idx],
+            qvel[6:6+self.num_joints][joint_idx],
+            self.mujoco_data.actuator_force[joint_idx],
+            quat_wxyz=qpos[3:7],
+            gyro=qvel[3:6],
+            acc=self.imu_acc[3:],
+        )
+
+    def _reset_root_estimator(self):
+        qpos, qvel = self.mujoco_data.qpos, self.mujoco_data.qvel
+        joint_idx = self.estimator_joint_idx
+        self.root_estimator.set_sensors(
+            qpos[7:7+self.num_joints][joint_idx], qvel[6:6+self.num_joints][joint_idx], np.zeros(len(joint_idx)), quat_wxyz=qpos[3:7], gyro=qvel[3:6]
+        )
+        self.root_estimator.reset()
+        # Anchor the estimate to the simulated start in xy (matters for reference state initialization); keep its own height.
+        self.root_pos_offset[:2] = qpos[:2] - self.root_estimator.position[:2]
+
+    def _log_root_estimation_error(self, root_pos):
+        self.estimator_log_counter += 1
+        if self.estimator_log_counter % 50 == 0:
+            error = root_pos - self.mujoco_data.qpos[:3]
+            logger.info(f'[Simulator] Root estimate error: xy {np.linalg.norm(error[:2]):.3f} m, z {error[2]:+.3f} m')
 
     def _setup_joystick(self):
         if self.use_joystick:
@@ -164,8 +217,13 @@ class MujocoSimulator(BaseSimulator):
 
     def refresh_sim(self):
 
+        root_pos = self.mujoco_data.qpos[:3]
+        if self.root_estimator is not None:
+            root_pos = self.root_estimator.position + self.root_pos_offset
+            self._log_root_estimation_error(root_pos)
+
         state_dict = { # weishuai: FIXME
-            "root_pos": self.mujoco_data.qpos[:3],
+            "root_pos": root_pos,
             "root_quat_wxyz": self.mujoco_data.qpos[3:7],
             "base_ang_vel": self.mujoco_data.qvel[3:6],
             "dof_pos": self.mujoco_data.qpos[7:7+self.num_joints][self.sim_to_env_joint_idx],
@@ -226,6 +284,9 @@ class MujocoSimulator(BaseSimulator):
 
         mujoco.mj_forward(self.mujoco_model, self.mujoco_data)
 
+        if self.root_estimator is not None:
+            self._reset_root_estimator()
+
         return init_qpos[:3], init_qpos[3:7]
 
     def apply_action(self, tgt_dof_pos):
@@ -238,7 +299,11 @@ class MujocoSimulator(BaseSimulator):
             torque = (target_dof_pos_in_sim - self.mujoco_data.qpos[7:7+self.num_joints]) * self.stiffness - self.mujoco_data.qvel[6:6+self.num_joints] * self.damping # no clip here
             # torque = np.clip(torque, -self.torque_limit, self.torque_limit)
             self.mujoco_data.ctrl[:] = torque # weishuai: no clip applied here
+            if self.root_estimator is not None:
+                qpos, qvel = self.mujoco_data.qpos.copy(), self.mujoco_data.qvel.copy()
             mujoco.mj_step(self.mujoco_model, self.mujoco_data)
+            if self.root_estimator is not None:
+                self._update_root_estimator(qpos, qvel)
 
         self._render()
 

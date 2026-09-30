@@ -134,15 +134,25 @@ pip install -e .
 4. Set the same port in Xsens and `env.config.xsens_port`.
 5. If Xsens uses Manus gloves, enable them before streaming; hand data is included automatically.
 
+### Onboard state estimator for root localization (default)
+
+Global tracking (`env.config.reference_forcing=False`) needs the pelvis position in the world frame. By default, ScaleBridge estimates it onboard without extra hardware: a Kalman filter fuses the pelvis IMU with leg kinematics, weighting each foot by a contact probability derived from contact forces that a momentum observer estimates from joint torques. It is a ROS-free port of the `legged_control2` state estimator that BeyondMimic deploys, and it runs on every 200 Hz robot state from the low-level controller.
+
+- Parameters are in `scalebridge/config/localization/legged_estimator.yaml`, and the model is `scalebridge/data/robot/g1_29dof/g1_29dof.urdf`.
+- It is odometry: the estimate drifts slowly with foot slip, assumes flat ground, and only uses the feet as contacts. Jumps, kneeling, sitting and falls degrade it, and a foot whose center of pressure leaves the sole bounds, for example under a strong lateral push, is ignored until it settles.
+- The BFM was trained with ground-truth root positions. Validate each motion in MuJoCo with `simulator.config.estimate_root_pos=True` before running it on the robot; the simulator then uses the estimate and logs its error against the ground truth.
+
+See the [legged state estimator manual](docs/legged_estimator.md) for how it works, tuning, validation results and troubleshooting. To use Vive trackers instead, add `localization=vive_tracker` to the launch command and follow the next section.
+
 ### Vive Ultimate Tracker for root localization
 
 1. Obtain [Vive Ultimate Trackers](https://www.vive.com/us/accessory/vive-ultimate-tracker/).
 2. Print the pelvis connector from `accessories/vive_tracker_for_G1.stl`.
 3. Launch Vive Hub and SteamVR, map the environment, and confirm that at least two trackers are available.
 4. Place tracker 0 on the floor and attach tracker 1 to the G1 pelvis.
-5. Check `localization_module.port` in the selected asset configuration (`scalebridge/config/asset/g1_29dof.yaml` or `scalebridge/config/asset/g1_29dof_dex3.yaml`). The default receiver port is `5000`.
+5. Check `port` in `scalebridge/config/localization/vive_tracker.yaml`. The default receiver port is `5000`.
 6. Copy the `scalebridge/utils/vive_sender` directory to your Windows device.
-7. Launch the tracker sender `tcp_send_raw_tracker_array.py` on the Windows computer using the policy computer's IP address and the same port as `localization_module.port`.
+7. Launch the tracker sender `tcp_send_raw_tracker_array.py` on the Windows computer using the policy computer's IP address and the same port.
 
 ## 🦾 3. Build the robot controller
 
@@ -278,7 +288,7 @@ Both tasks support local and global tracking through `env.config.reference_forci
 | Value | Tracking mode | Behavior |
 | --- | --- | --- |
 | `True` | Local | Uses the reference root position as the current root position |
-| `False` | Global | Uses the root-localization module when it is available |
+| `False` | Global | Uses the root-localization module: the onboard state estimator (`localization=legged_estimator`, default) or Vive trackers (`localization=vive_tracker`) |
 
 </details>
 
@@ -294,6 +304,7 @@ The simulator configuration controls execution timing and optional visualization
 | `record_video` | MuJoCo | `False` | Records `recording.mp4` in the Hydra output directory |
 | `marker` | MuJoCo | `True` | Displays reference-body markers |
 | `camera_follow` | MuJoCo | `True` | Keeps the camera centered on the robot |
+| `estimate_root_pos` | MuJoCo | `False` | In global tracking, uses the onboard state estimator on simulated sensors instead of the ground-truth root position |
 
 For example, enable video recording during MuJoCo evaluation with:
 
@@ -365,6 +376,8 @@ simulator=mujoco_simulator simulator.config.record_video=True
      simulator=mujoco_simulator
    ```
 
+   Repeat with `simulator.config.estimate_root_pos=True` to run the onboard state estimator in the loop, as on the robot.
+
 2. Proceed only after confirming that the policy performs as expected in simulation. Suspend the robot securely, then launch the low-level controller:
 
    ```bash
@@ -372,7 +385,7 @@ simulator=mujoco_simulator simulator.config.record_video=True
    ./g1_29dof_controller NETWORK_INTERFACE
    ```
 
-3. Connect the Vive Tracker and put the one with index 0 on the ground, with its logo up. Mount another one with index 1 on the robot's hip **in the same orientation shown in the figure**.
+3. Skip steps 3 and 4 unless you use Vive trackers (`localization=vive_tracker`). Connect the Vive Tracker and put the one with index 0 on the ground, with its logo up. Mount another one with index 1 on the robot's hip **in the same orientation shown in the figure**.
 
    <p align="center">
      <img src="assets/vive_install.png" alt="Vive Tracker mounted on the robot's hip">
@@ -401,7 +414,7 @@ simulator=mujoco_simulator simulator.config.record_video=True
 
 6. Carefully lower the robot until its feet contact the ground and it reaches a stable standing configuration. If the balance point is difficult to locate, gradually release tension from the suspension system while keeping the robot supported.
 
-7. Follow the instructions in the terminal and press `R2` once on the remote controller to calibrate the robot state. Ensure the robot stay still and the Vive Tracker faces directly to the bottom in a well-aligned pose.
+7. Follow the instructions in the terminal and press `R2` once on the remote controller to calibrate the robot state. Ensure the robot stands still on flat ground; the state estimator restarts from this pose. With Vive trackers, also ensure the Vive Tracker faces directly to the bottom in a well-aligned pose.
 
 8. After confirming that the robot and surrounding area are ready, press `R2` again to establish communication between the policy and the controller and begin execution.
 

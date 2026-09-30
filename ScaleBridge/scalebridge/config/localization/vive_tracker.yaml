@@ -1,0 +1,5 @@
+# Root localization from Vive Ultimate Trackers streamed by scalebridge/utils/vive_sender.
+
+_target_: scalebridge.utils.vive_tracker.online_client.ViveTrackerOnlineClient
+host: 0.0.0.0
+port: 5000

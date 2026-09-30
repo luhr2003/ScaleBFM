@@ -8,3 +8,4 @@ config:
   marker: True
   joystick: False
   camera_follow: True
+  estimate_root_pos: False  # global tracking: use the legged state estimator on simulated sensors instead of ground truth

@@ -15,6 +15,7 @@ setup(
     "torch",
     "numpy",
     "mujoco",
+    "pin",
     "omegaconf",
     "hydra-core",
     "easydict",

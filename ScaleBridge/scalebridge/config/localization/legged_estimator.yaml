@@ -1,0 +1,24 @@
+# Root localization from joint encoders, joint torques and the pelvis IMU, with no external tracker.
+# ROS-free port of the legged_control2 state estimator used by BeyondMimic; see scalebridge/utils/legged_estimator.
+
+_target_: scalebridge.utils.legged_estimator.online_client.LeggedEstimatorOnlineClient
+joint_names: ${asset.real_joint_names}
+state_decoder: ${asset.state_decoder}
+channel: robot_state_data
+log_period: 1.0  # s between DEBUG logs of the estimate and contact probabilities (0 disables)
+
+estimator:
+  urdf_path: scalebridge/data/robot/g1_29dof/g1_29dof.urdf
+  base_name: pelvis
+  contact_names: [LL_FOOT, LR_FOOT]
+  cutoff_frequency: 10.0  # momentum observer low-pass (Hz)
+  imu_acceleration_noise_density: 0.01
+  imu_acceleration_bias_noise_density: 0.005
+  contact_process_noise_position: 0.002
+  contact_sensor_noise_position: 0.002
+  contact_height_sensor_noise: 0.002
+  contact_radius: 0.0
+  contact_force_threshold: 150.0  # N, midpoint of the contact probability sigmoid
+  contact_force_scale: 15.0
+  contact_zmp_length_x: 0.08  # m, center-of-pressure bounds of the sole
+  contact_zmp_length_y: 0.025
