@@ -57,6 +57,9 @@ parser.add_argument("--per_clip", type=str, default=None, help="Optional .npz wi
 parser.add_argument("--video_dir", type=str, default=None,
                     help="Record an mp4 of env 0 (the first clip of every batch) into this directory; use with a handful of clips.")
 parser.add_argument("--video_stride", type=int, default=2, help="Record every n-th control step (50 Hz / n fps).")
+parser.add_argument("--future_idx", type=int, nargs="+", default=None,
+                    help="Override the future frame offsets of the actor's task observations. Training uses 0 1 2 3 4 -1 (-1 = last frame of the clip), "
+                         "the deployment export (play_export_check_humanoid_transformer*.py) uses 0 1 2 3 4 5.")
 parser.add_argument("--embedding_dim", type=int, default=None)
 parser.add_argument("--num_heads", type=int, default=None)
 parser.add_argument("--ff_dim", type=int, default=None)
@@ -167,6 +170,10 @@ def main():
     env_cfg.seed = args_cli.seed
     env_cfg.commands.motion.motion_file = motion_file
     env_cfg.commands.motion.enable_reset_disturbance = args_cli.reset_disturbance
+    if args_cli.future_idx is not None:
+        for term_name in ("target_body_pos", "target_body_pos_rel", "target_body_rot", "target_body_rot_rel", "timestamp"):
+            getattr(env_cfg.observations.policy_task, term_name).params["future_idx"] = list(args_cli.future_idx)
+        print(f"[eval] actor future offsets overridden: {args_cli.future_idx}", flush=True)
     env_cfg.commands.motion.debug_vis = bool(args_cli.video_dir)  # reference markers are drawn in the videos
     if args_cli.video_dir:
         env_cfg.viewer.origin_type = "asset_root"

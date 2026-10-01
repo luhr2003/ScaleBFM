@@ -29,8 +29,8 @@ TERRAIN_FRAC = float(os.environ.get("SCALETRACK_TERRAIN_FRAC", "0.35"))
 # Control modes of terrain envs: what a planner that provides foot targets drives (whole body, root + end effectors),
 # plus small shares of a few sparser modes.
 TERRAIN_MODE_PROBS = {
-    "WholeBody-14": 0.55,
-    "VR-5": 0.30,
+    "WholeBody-14": 0.65,
+    "VR-5": 0.20,
     "UpperBody-Mobile-7": 0.05,
     "VR-3": 0.05,
     "UMI-4": 0.05,
