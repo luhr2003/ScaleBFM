@@ -105,7 +105,11 @@ class MujocoSimulator(BaseSimulator):
         self.root_pos_offset = np.zeros(3)
         self.estimator_log_counter = 0
         logger.info(f'[Simulator] Root position comes from the legged state estimator instead of the ground truth.')
+        lidar_cfg = localization_cfg.get('lidar', None)
+        if self.lidar_odom is None and lidar_cfg is not None:
+            self.lidar_odom = dict(lidar_cfg.get('sim', {}))  # the default localization uses a LiDAR odometry: emulate FAST-LIO
         if self.lidar_odom:
+            self.lidar_odom = {**{k: lidar_cfg[k] for k in ('latency', 'gate', 'realign_after') if lidar_cfg is not None and k in lidar_cfg}, **dict(self.lidar_odom)}
             self._setup_lidar_odometry()
         if self.depth_ground:
             self._setup_depth_ground()

@@ -48,7 +48,7 @@ class LidarOdometryFusion:
         self.latency = float(latency)
         self.gate = float(gate)
         self.realign_after = float(realign_after)
-        self._history = deque(maxlen=max(400, int(2.0 * 200)))  # (time, LiDAR position in the estimator frame)
+        self._history = deque(maxlen=max(400, int(2.0 * 200)))  # (time, LiDAR position, LiDAR rotation) in the estimator frame
         estimator.update_hooks.append(self._record)
         self.reset_alignment()
 
@@ -62,21 +62,22 @@ class LidarOdometryFusion:
         return self._aligned
 
     def _record(self):
-        self._history.append((self.estimator.time, self.estimator.model.get_frame_placement(self.frame_id).translation.copy()))
+        placement = self.estimator.model.get_frame_placement(self.frame_id)
+        self._history.append((self.estimator.time, placement.translation.copy(), placement.rotation.copy()))
 
-    def _position_at(self, time_s):
-        """The LiDAR position the estimator had at `time_s` (linear interpolation of the recorded history)."""
+    def _state_at(self, time_s):
+        """The LiDAR pose (position interpolated, rotation of the nearest sample) the estimator had at `time_s`."""
         if not self._history:
             return None
-        times = np.fromiter((t for t, _ in self._history), dtype=np.float64, count=len(self._history))
+        times = np.fromiter((entry[0] for entry in self._history), dtype=np.float64, count=len(self._history))
         index = int(np.searchsorted(times, time_s))
         if index <= 0:
-            return self._history[0][1]
+            return self._history[0][1], self._history[0][2]
         if index >= len(times):
-            return self._history[-1][1]
-        (t0, p0), (t1, p1) = self._history[index - 1], self._history[index]
+            return self._history[-1][1], self._history[-1][2]
+        (t0, p0, r0), (t1, p1, r1) = self._history[index - 1], self._history[index]
         w = 0.0 if t1 == t0 else (time_s - t0) / (t1 - t0)
-        return (1.0 - w) * p0 + w * p1
+        return (1.0 - w) * p0 + w * p1, (r0 if w < 0.5 else r1)
 
     def update(self, lidar_position, lidar_quat_wxyz, time_s=None):
         """Fuse one LiDAR odometry pose of the `frame_name` body, given in the LiDAR odom frame (quat wxyz).
@@ -94,13 +95,16 @@ class LidarOdometryFusion:
         placement = model.get_frame_placement(self.frame_id)
         lever = placement.translation - model.get_frame_placement(model.base_frame_id).translation  # pelvis -> LiDAR, world axes
 
+        stamped = self._state_at(now - self.latency)  # the estimator's own LiDAR pose when the odometry pose was measured
+        stamped_position, stamped_rotation = stamped if stamped is not None else (placement.translation, placement.rotation)
+
         if not self._aligned:
             quat = np.asarray(lidar_quat_wxyz, dtype=np.float64)
             rotation_odom = pin.Quaternion(quat[0], quat[1], quat[2], quat[3]).toRotationMatrix()
-            self._yaw = yaw_of(placement.rotation) - yaw_of(rotation_odom)
+            self._yaw = yaw_of(stamped_rotation) - yaw_of(rotation_odom)
             self._rotation = rot_z(self._yaw)
             self._odom_origin = lidar_position.copy()
-            self._estimator_origin = placement.translation.copy()
+            self._estimator_origin = stamped_position.copy()
             self._aligned = True
             self._last_time = now
             logger.info(f"[LidarOdometry] Aligned to the estimator frame, yaw offset {np.degrees(self._yaw):.1f} deg.")
@@ -108,9 +112,7 @@ class LidarOdometryFusion:
 
         lidar_in_estimator = self._estimator_origin + self._rotation @ (lidar_position - self._odom_origin)
         if self.latency > 0.0:
-            stamped = self._position_at(now - self.latency)
-            if stamped is not None:
-                lidar_in_estimator = lidar_in_estimator + (placement.translation - stamped)  # motion since the measurement
+            lidar_in_estimator = lidar_in_estimator + (placement.translation - stamped_position)  # motion since the measurement
         measurement = lidar_in_estimator - lever
         dt = max(now - self._last_time, 1e-3)
         self._last_time = now
@@ -122,7 +124,7 @@ class LidarOdometryFusion:
                 return False
             # The odometry has been somewhere else for a while: trust it, move the alignment, keep the estimate continuous.
             self._odom_origin = lidar_position.copy()
-            self._estimator_origin = placement.translation.copy()
+            self._estimator_origin = stamped_position.copy()
             self._rejected_since = None
             logger.warning("[LidarOdometry] Pose jumped away from the estimate and stayed there; alignment shifted.")
             return False

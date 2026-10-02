@@ -57,6 +57,9 @@ class LeggedEstimatorOnlineClient:
 
         self._lock = threading.Lock()
         self._first_state = threading.Event()
+        self._first_lidar = threading.Event()
+        self._last_lidar_time = None
+        self._last_stale_log = None
         self._running = threading.Event()
         self._last_time = None
         self._last_log_time = None
@@ -84,7 +87,17 @@ class LeggedEstimatorOnlineClient:
 
     def accept_blocking(self) -> str:
         self._first_state.wait()
+        if self.lidar_cfg and self.lidar_cfg.get('required', True):
+            wait_s = float(self.lidar_cfg.get('wait_s', 30.0))
+            logger.info(f"[LeggedEstimator] Waiting up to {wait_s:.0f} s for the first LiDAR odometry pose from {self.lidar_subscriber.endpoint} ...")
+            if not self._first_lidar.wait(timeout=wait_s):
+                raise RuntimeError(
+                    "No LiDAR odometry pose arrived. The default localization (legged_estimator_lidar) needs FAST-LIO and "
+                    "fastlio_bridge.py running on PC2 and publishing on " + self.lidar_subscriber.endpoint + ". Start them, or use "
+                    "localization=legged_estimator on flat ground (no LiDAR needed), or set localization.lidar.required=false to debug."
+                )
         return f"{self.channel} over LCM"
+
 
     def start(self) -> None:
         logger.info(f"[LeggedEstimator] Estimating the root position from joint encoders, joint torques and the IMU.")
@@ -111,6 +124,8 @@ class LeggedEstimatorOnlineClient:
         frame = BODY_FRAMES.get(body)
         if frame is None:
             return
+        self._last_lidar_time = receive_time
+        self._first_lidar.set()
         with self._lock:
             fusion = self.lidar_fusions.get(frame)
             if fusion is None:
@@ -146,6 +161,9 @@ class LeggedEstimatorOnlineClient:
             )
             if self.estimator.initialized:
                 self.buffer.append((now, position))
+                if self.lidar_cfg and self._first_lidar.is_set() and now - self._last_lidar_time > self.lidar_cfg.get('stale_s', 1.0) and (self._last_stale_log is None or now - self._last_stale_log >= 1.0):
+                    self._last_stale_log = now
+                    logger.warning(f"[LeggedEstimator] LiDAR odometry pose is {now - self._last_lidar_time:.1f} s old: the height and position are drifting on the legs only.")
                 if self.log_period > 0 and (self._last_log_time is None or now - self._last_log_time >= self.log_period):
                     self._last_log_time = now
                     probabilities = self.estimator.kalman_filter.contact_probabilities

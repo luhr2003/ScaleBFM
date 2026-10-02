@@ -15,7 +15,7 @@ Global tracking (`env.config.reference_forcing=False`) needs the pelvis position
 
 ## 1. Usage
 
-The estimator is used whenever global tracking is enabled (`env.config.reference_forcing=False`) and `localization=legged_estimator`, which is the default. Local tracking (`reference_forcing=True`) does not use it.
+The default localization is `legged_estimator_lidar`: this estimator plus the pose of a LiDAR odometry (FAST-LIO on the Mid-360), which works on flat ground and on stairs and needs FAST-LIO and its bridge running (section 10 and [real_robot_deployment_zh.md](real_robot_deployment_zh.md)). `localization=legged_estimator`, described in sections 1 to 9, is the original estimator without a LiDAR for flat ground. Both are used whenever global tracking is enabled (`env.config.reference_forcing=False`). Local tracking (`reference_forcing=True`) does not use it.
 
 ### Install
 

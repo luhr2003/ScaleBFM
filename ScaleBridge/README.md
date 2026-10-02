@@ -288,7 +288,7 @@ Both tasks support local and global tracking through `env.config.reference_forci
 | Value | Tracking mode | Behavior |
 | --- | --- | --- |
 | `True` | Local | Uses the reference root position as the current root position |
-| `False` | Global | Uses the root-localization module: the onboard state estimator (`localization=legged_estimator`, default) or Vive trackers (`localization=vive_tracker`) |
+| `False` | Global | Uses the root-localization module: the onboard state estimator (`localization=legged_estimator_lidar`, default; `localization=legged_estimator` for flat ground without a LiDAR) or Vive trackers (`localization=vive_tracker`) |
 
 </details>
 
