@@ -1,12 +1,13 @@
 # Terrain fine-tuned checkpoints
 
-Both files are the pretrained `humanoid_transformer_m` (`model_22200.pt`) fine-tuned for terrain (stairs 0.05–0.30 m, boxes, rough ground, slopes)
+The files are the pretrained `humanoid_transformer_m` (`model_22200.pt`) fine-tuned for terrain (stairs 0.05–0.30 m, boxes, rough ground, slopes)
 **without touching the network or the deployment interface** (same observations, same export flow, same 8 control modes). They have the original
 rsl_rl format (`model_state_dict`, optimizer states, `iter`) and load exactly like `model_22200.pt`.
 
 | file | what it is |
 |---|---|
-| `ft_v2_soupA_it26000-27000.pt` | **recommended for terrain.** Weight average of the run's checkpoints at iterations 26000, 26200, 26400, 26600, 26800 and 27000 (`scripts/eval/average_ckpts.py`). |
+| `ft_v3_it26800.pt` | **newest, highest gate numbers.** Iteration 26800 of `ft_v3`, a branch of the `ft_v2` run taken at its terrain peak (iteration 26200) with the 25900-26250 settings restored (anchor coefficient 2, actor learning rate 1e-4); a single checkpoint, full 26-configuration flat gate clean. Not yet validated in the MagicSim closed loop. |
+| `ft_v2_soupA_it26000-27000.pt` | **recommended for terrain** until `ft_v3` is finished and averaged. Weight average of the run's checkpoints at iterations 26000, 26200, 26400, 26600, 26800 and 27000 (`scripts/eval/average_ckpts.py`). |
 | `ft_v2_it25200.pt` | A single checkpoint of the same run, the one validated so far in the MagicSim closed loop (planner + tracker). |
 
 How they were trained (see `scalebfm_terrain_training_plan.md` in the repository root for the full story, the decision log and the incidents):
@@ -31,6 +32,8 @@ terrain layouts (never trained on, 1500 clips of 20 s), training future offsets:
 | terrain, mode 7, local tracking (reference forcing), relative-error success | 17.5 % | 58.8 % | 59.6 % |
 | flat, 26 mode x tracking configurations (BONES + Ours): change of success rate, BONES global / local | – | −0.11 / −0.10 pp | −0.08 / +0.04 pp |
 | flat, Ours global / local | – | +0.12 / +0.27 pp | +0.00 / +0.20 pp |
+
+`ft_v3_it26800.pt` on the same gate (full flat gate, same held-out terrain): terrain mode 7 global **87.1 %**, mode 4 global **84.7 %**, mode 7 local (relative-error success) 62.9 %; flat BONES global / local −0.13 / +0.10 pp, Ours global / local +0.00 / −0.33 pp.
 
 The flat changes are within the evaluation noise (about ±0.3 pp for BONES, ±1.5 pp for Ours): no regression of any control mode.
 
