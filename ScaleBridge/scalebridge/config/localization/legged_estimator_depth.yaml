@@ -1,0 +1,18 @@
+# Legged state estimator with a torso D435i depth camera for the ground height under the feet (stairs and uneven ground).
+# Starts from legged_estimator_stairs (no flat-ground height) and measures each planted foot at the height of the ground
+# under it from a rolling height map instead; cells the camera has not seen yet give no measurement.
+# Needs a depth source feeding scalebridge.utils.legged_estimator.DepthGroundHeight (simulator.config.depth_ground in MuJoCo).
+defaults:
+  - legged_estimator_stairs
+  - _self_
+
+estimator:
+  contact_height_sensor_noise: 0.03  # m, noise of the map height under a foot
+
+# Real robot depth source (ignored by the MuJoCo simulator, which renders its own camera).
+#  wire:      frames from `python3 rs_probe.py --serve` (MagicLoco sim2real/perception/tools) running on PC2
+#  realsense: pyrealsense2 in this process, when ScaleBridge runs on PC2 (the camera is plugged into it)
+depth:
+  source: wire
+  endpoint: tcp://192.168.123.164:5609
+  hz: 10.0

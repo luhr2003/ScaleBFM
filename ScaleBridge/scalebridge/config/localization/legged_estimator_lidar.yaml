@@ -1,0 +1,16 @@
+# Legged state estimator + LiDAR odometry (FAST-LIO on the Livox Mid-360) for stairs and uneven ground.
+# Needs MagicLoco's sim2real/perception/fastlio_bridge.py running on PC2 next to FAST-LIO (publishes the pose on tcp://*:5606).
+# The LiDAR pose gives the legs the absolute height and position they lack once the flat-ground assumption is dropped.
+defaults:
+  - legged_estimator_stairs
+  - _self_
+
+lidar:
+  endpoint: tcp://192.168.123.164:5606  # PC2
+  latency: 0.1  # s, delay of a pose between measurement and arrival (FAST-LIO + bridge + network); measure it on the robot
+  gate: 0.3  # m, a pose further than this from the estimate is ignored (outlier)
+  realign_after: 1.0  # s, an outlier that persists this long is accepted and the alignment shifted (estimate stays continuous)
+
+estimator:
+  position_noise_density: 0.01  # xy of the LiDAR position measurement, m / sqrt(s)
+  position_noise_density_z: 0.01  # z

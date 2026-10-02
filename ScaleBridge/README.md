@@ -142,7 +142,7 @@ Global tracking (`env.config.reference_forcing=False`) needs the pelvis position
 - It is odometry: the estimate drifts slowly with foot slip, assumes flat ground, and only uses the feet as contacts. Jumps, kneeling, sitting and falls degrade it, and a foot whose center of pressure leaves the sole bounds, for example under a strong lateral push, is ignored until it settles.
 - The BFM was trained with ground-truth root positions. Validate each motion in MuJoCo with `simulator.config.estimate_root_pos=True` before running it on the robot; the simulator then uses the estimate and logs its error against the ground truth.
 
-See the [legged state estimator manual](docs/legged_estimator.md) for how it works, tuning, validation results and troubleshooting. To use Vive trackers instead, add `localization=vive_tracker` to the launch command and follow the next section.
+See the [legged state estimator manual](docs/legged_estimator.md) for how it works, tuning, validation results and troubleshooting. For stairs and uneven ground the default estimator is not enough (it assumes flat ground); the manual's section 10 describes the experimental `legged_estimator_stairs`, `legged_estimator_lidar` (Mid-360 / FAST-LIO) and `legged_estimator_depth` (D435i) variants. To use Vive trackers instead, add `localization=vive_tracker` to the launch command and follow the next section.
 
 ### Vive Ultimate Tracker for root localization
 

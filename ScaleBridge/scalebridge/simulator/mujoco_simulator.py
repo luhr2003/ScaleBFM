@@ -24,6 +24,9 @@ def draw_marker(pos,v):
     )
     v.user_scn.ngeom += 1
 
+from scalebridge.utils.legged_estimator.depth_ground import D435_PITCH, D435_POSITION
+
+
 class MujocoSimulator(BaseSimulator):
     def __init__(self, config, metadata_dict):
         
@@ -32,6 +35,8 @@ class MujocoSimulator(BaseSimulator):
         self.use_joystick = config.get('joystick', False)
         self.camera_follow = config.get('camera_follow', False) or self.record_video
         self.estimate_root_pos = config.get('estimate_root_pos', False)
+        self.lidar_odom = config.get('lidar_odom', None)  # simulated FAST-LIO pose stream fused into the estimator
+        self.depth_ground = config.get('depth_ground', None)  # simulated D435 depth camera: ground height under the feet
 
         super().__init__(config, metadata_dict)
 
@@ -47,7 +52,14 @@ class MujocoSimulator(BaseSimulator):
         if self.has_object:
             xml_path = merge_robot_object_xml(xml_path, self.metadata_dict)
 
-        self.mujoco_model = mujoco.MjModel.from_xml_path(xml_path)
+        if self.depth_ground:
+            # Mount the D435i on the torso as in the URDF (d435_joint): 47.6 deg downward pitch, MuJoCo camera axes x right, y up.
+            spec = mujoco.MjSpec.from_file(xml_path)
+            pitch = D435_PITCH
+            spec.body('torso_link').add_camera(name='d435', pos=list(D435_POSITION), xyaxes=[0.0, -1.0, 0.0, np.sin(pitch), 0.0, np.cos(pitch)], fovy=float(self.depth_ground.get('fovy', 58.0)))
+            self.mujoco_model = spec.compile()
+        else:
+            self.mujoco_model = mujoco.MjModel.from_xml_path(xml_path)
         self.mujoco_data = mujoco.MjData(self.mujoco_model)
         self.mujoco_model.opt.timestep=self.low_dt
         
@@ -93,6 +105,87 @@ class MujocoSimulator(BaseSimulator):
         self.root_pos_offset = np.zeros(3)
         self.estimator_log_counter = 0
         logger.info(f'[Simulator] Root position comes from the legged state estimator instead of the ground truth.')
+        if self.lidar_odom:
+            self._setup_lidar_odometry()
+        if self.depth_ground:
+            self._setup_depth_ground()
+
+    def _setup_depth_ground(self):
+        from scalebridge.utils.legged_estimator import CameraIntrinsics, DepthGroundHeight
+        from scalebridge.utils.legged_estimator.depth_ground import d435_in_torso
+
+        cfg = self.depth_ground
+        width, height = int(cfg.get('width', 320)), int(cfg.get('height', 240))
+        intrinsics = CameraIntrinsics.from_fovy(cfg.get('fovy', 58.0), width, height)
+        self.depth_fusion = DepthGroundHeight(self.root_estimator, intrinsics, d435_in_torso())
+        self.depth_renderer = mujoco.Renderer(self.mujoco_model, height=height, width=width)
+        self.depth_renderer.enable_depth_rendering()
+        self.depth_period = max(1, int(round(1.0 / cfg.get('hz', 10.0) / self.low_dt)))
+        self.depth_noise = cfg.get('noise_frac', 0.0)
+        self.depth_rng = np.random.default_rng(cfg.get('seed', 0))
+        self.depth_step = 0
+        logger.info(f'[Simulator] Simulated D435 depth camera fused: {dict(cfg)}')
+
+    def _update_depth_ground(self):
+        self.depth_step += 1
+        if self.depth_step % self.depth_period:
+            return
+        self.depth_renderer.update_scene(self.mujoco_data, camera='d435')
+        depth = self.depth_renderer.render().copy()
+        if self.depth_noise:
+            depth = depth * (1.0 + self.depth_rng.normal(0.0, self.depth_noise, depth.shape))
+        self.depth_fusion.update(depth)
+
+    def _setup_lidar_odometry(self):
+        # Emulate FAST-LIO on the Mid-360: the pose of the LiDAR body in an odom frame with arbitrary origin and heading,
+        # at lidar_odom.hz, with white noise and a slow drift, fed through the same fusion code as the real robot.
+        import pinocchio as pin
+        from scalebridge.utils.legged_estimator import LidarOdometryFusion
+
+        cfg = self.lidar_odom
+        self.lidar_fusion = LidarOdometryFusion(self.root_estimator, cfg.get('frame', 'mid360_link'), latency=cfg.get('latency', 0.0), gate=cfg.get('gate', 0.3), realign_after=cfg.get('realign_after', 1.0))
+        self.lidar_queue = []  # (delivery time, position, quat): the bridge delivers each pose `delay` seconds late
+        self.lidar_delay = cfg.get('delay', 0.0)
+        self.lidar_jump = cfg.get('jump', None)  # e.g. {time: 8.0, dz: 0.2, dxy: 0.0}: the odometry jumps once, as on a relocalization
+        estimator_model = self.root_estimator.model
+        estimator_model.update()
+        torso = estimator_model.get_frame_placement(estimator_model.model.getFrameId('torso_link'))
+        lidar = estimator_model.get_frame_placement(self.lidar_fusion.frame_id)
+        relative = torso.inverse() * lidar
+        self.lidar_in_torso = (relative.translation.copy(), relative.rotation.copy())
+        self.torso_body_id = mujoco.mj_name2id(self.mujoco_model, mujoco.mjtObj.mjOBJ_BODY, 'torso_link')
+        self.lidar_period = max(1, int(round(1.0 / cfg.get('hz', 10.0) / self.low_dt)))
+        self.lidar_rng = np.random.default_rng(cfg.get('seed', 0))
+        yaw, shift = cfg.get('odom_yaw', 0.7), np.array(cfg.get('odom_origin', [3.0, -2.0, 1.0]), dtype=np.float64)
+        self.lidar_odom_rotation = np.array([[np.cos(yaw), -np.sin(yaw), 0.0], [np.sin(yaw), np.cos(yaw), 0.0], [0.0, 0.0, 1.0]])
+        self.lidar_odom_shift = shift
+        direction = self.lidar_rng.normal(size=2)
+        self.lidar_drift_xy = cfg.get('xy_drift', 0.0) * direction / np.linalg.norm(direction)
+        self.lidar_drift_z = cfg.get('z_drift', 0.0)
+        self.lidar_sigma = cfg.get('sigma', 0.01)
+        self.lidar_step = 0
+        self.lidar_t0 = 0.0
+        logger.info(f'[Simulator] Simulated LiDAR odometry fused: {dict(cfg)}')
+
+    def _update_lidar_odometry(self):
+        self.lidar_step += 1
+        if self.lidar_step % self.lidar_period:
+            return
+        data = self.mujoco_data
+        rotation_torso = data.xmat[self.torso_body_id].reshape(3, 3)
+        position = data.xpos[self.torso_body_id] + rotation_torso @ self.lidar_in_torso[0]
+        rotation = rotation_torso @ self.lidar_in_torso[1]
+        t = data.time - self.lidar_t0
+        position = self.lidar_odom_rotation @ position + self.lidar_odom_shift
+        position = position + np.array([*(self.lidar_drift_xy * t), self.lidar_drift_z * t]) + self.lidar_rng.normal(0.0, self.lidar_sigma, 3)
+        if self.lidar_jump and t >= self.lidar_jump['time']:
+            position = position + np.array([self.lidar_jump.get('dxy', 0.0), 0.0, self.lidar_jump.get('dz', 0.0)])
+        quat = np.zeros(4)
+        mujoco.mju_mat2Quat(quat, (self.lidar_odom_rotation @ rotation).flatten())
+        self.lidar_queue.append((data.time + self.lidar_delay, position, quat))
+        while self.lidar_queue and self.lidar_queue[0][0] <= data.time:
+            _, delivered_position, delivered_quat = self.lidar_queue.pop(0)
+            self.lidar_fusion.update(delivered_position, delivered_quat)
 
     def _update_root_estimator(self, qpos, qvel):
         # mj_step integrates qpos/qvel but leaves kinematics, accelerations and actuator forces at the pre-step state,
@@ -117,6 +210,12 @@ class MujocoSimulator(BaseSimulator):
             qpos[7:7+self.num_joints][joint_idx], qvel[6:6+self.num_joints][joint_idx], np.zeros(len(joint_idx)), quat_wxyz=qpos[3:7], gyro=qvel[3:6]
         )
         self.root_estimator.reset()
+        if self.lidar_odom:
+            self.lidar_fusion.reset_alignment()
+            self.lidar_queue.clear()
+            self.lidar_t0 = self.mujoco_data.time
+        if self.depth_ground:
+            self.depth_fusion.reset()
         # Anchor the estimate to the simulated start in xy (matters for reference state initialization); keep its own height.
         self.root_pos_offset[:2] = qpos[:2] - self.root_estimator.position[:2]
 
@@ -304,6 +403,10 @@ class MujocoSimulator(BaseSimulator):
             mujoco.mj_step(self.mujoco_model, self.mujoco_data)
             if self.root_estimator is not None:
                 self._update_root_estimator(qpos, qvel)
+                if self.lidar_odom:
+                    self._update_lidar_odometry()
+                if self.depth_ground:
+                    self._update_depth_ground()
 
         self._render()
 

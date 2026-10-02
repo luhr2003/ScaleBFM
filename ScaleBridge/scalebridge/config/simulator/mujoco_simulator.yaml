@@ -9,3 +9,5 @@ config:
   joystick: False
   camera_follow: True
   estimate_root_pos: False  # global tracking: use the legged state estimator on simulated sensors instead of ground truth
+  lidar_odom: null  # simulated FAST-LIO pose fused into the estimator, e.g. {hz: 10, sigma: 0.01, xy_drift: 0.0, z_drift: 0.0}
+  depth_ground: null  # simulated D435 depth camera for the foot heights, e.g. {hz: 10, width: 320, height: 240, fovy: 58, noise_frac: 0.01}

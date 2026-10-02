@@ -11,6 +11,7 @@ Global tracking (`env.config.reference_forcing=False`) needs the pelvis position
 - [7. Should the policy be fine-tuned?](#7-should-the-policy-be-fine-tuned)
 - [8. Provenance](#8-provenance)
 - [9. File map](#9-file-map)
+- [10. Stairs and uneven ground](#10-stairs-and-uneven-ground)
 
 ## 1. Usage
 
@@ -328,6 +329,7 @@ To see how the policy reacts to estimator failures, the estimate given to the po
 
 - **Odometry, not localization.** Errors accumulate with foot slip; nothing corrects them over long runs. External position fusion exists in `legged_control2` but is not ported (see section 8).
 - **Flat ground, feet only.** The height measurement assumes the feet are at z = 0, and only the soles are contacts. Stairs, slopes, kneeling, sitting, lying down and falls invalidate the estimate. After a fall, stop the policy.
+  - Stairs and uneven ground need the variants of section 10; do not use the default estimator there.
 - **Flight phases.** With no contact the filter integrates the IMU; short jumps are fine, long aerial phases drift quickly.
 - **Calibrate standing still.** `reset()` zeroes the velocity estimate. Calibrating while the robot moves leaves an offset (about 1 cm in tests).
 - **Policy sensitivity.** The BFM was trained with ground-truth root positions. Slow drift is harmless (the robot follows a slightly shifted reference), but a sudden jump in the estimate looks like a real tracking error and the policy reacts to it. See section 7.
@@ -440,3 +442,40 @@ Two deliberate deviations: `sigmoid` uses `scipy.special.expit` (same values wit
 | `scalebridge/config/localization/vive_tracker.yaml` | Vive tracker alternative |
 | `scalebridge/simulator/mujoco_simulator.py` | `estimate_root_pos` hook for sim validation |
 | `scalebridge/data/robot/g1_29dof/g1_29dof.urdf` | Estimator model |
+
+## 10. Stairs and uneven ground
+
+The default estimator assumes flat ground: every planted foot is measured at z = 0. On stairs that pins the pelvis height to the floor level of the start, and the whole climb is lost (in MuJoCo, 0 of 10 stair clips pass with the default estimator against 9 of 10 with ground-truth position; see the table). Three variants remove the assumption. All are experimental and were evaluated only in MuJoCo with the policy in the loop; none of the real-robot parts (D435, FAST-LIO bridge) was run on hardware.
+
+| Variant (`localization=`) | What it adds | Needs |
+| --- | --- | --- |
+| `legged_estimator_stairs` | Drops the flat-ground height measurement, widens the center-of-pressure window to the real sole (0.10 x 0.04 m) and detects contact at a lower load (100 N). The height follows the stance foot through leg kinematics. | nothing |
+| `legged_estimator_lidar` | The above plus the absolute pose of a LiDAR odometry (FAST-LIO on the Livox Mid-360), fused as a 10 Hz position measurement (`LidarOdometryFusion`). | MagicLoco's `sim2real/perception/fastlio_bridge.py` on PC2 (pose wire, port 5606) |
+| `legged_estimator_depth` | The above stairs variant plus the ground height under each planted foot from a rolling height map of a torso D435i depth camera (`DepthGroundHeight`), replacing the zero. | a depth source feeding `DepthGroundHeight.update` (MuJoCo only for now) |
+
+Why the legs alone drift: once the flat-ground height is removed, the common height of base and feet has no absolute reference and is only held by IMU integration, so a gravity residual of 0.01 m/s^2 moves it by centimeters per second, and every step with a lost contact adds more. With the stairs variant alone the height error after a 4 m climb is about 0.2 to 0.4 m, and it fails when jogging on flat ground (flight phases), so use it only for stairs.
+
+**LiDAR.** The LiDAR odom frame has an arbitrary origin and heading. At calibration (first `R2`) the first pose defines the alignment: yaw from the LiDAR body orientation against the IMU heading, position against the estimate. The pelvis position is the LiDAR position minus the pelvis-to-`mid360_link` lever from the estimator's own kinematics (the URDF has the frame), so the waist joints are accounted for. The fused estimate follows the LiDAR, so its error is the LiDAR drift: FAST-LIO has to be healthy (MagicLoco asks for a height drift below 2 cm over 5 minutes standing still). `body` in the wire message selects the frame (0 `mid360_link`, 1 `torso_link`, 2 `pelvis`).
+
+Latency and outliers are handled in `LidarOdometryFusion`. A pose arrives `latency` seconds late (the wire timestamp is the sender's clock, so it is a parameter, set 0.1 s by default; measure it on the robot): the estimator's own motion since then is added, so the delayed pose is compared with the state it describes. A pose further than `gate` (0.3 m) from the estimate is ignored; if that lasts `realign_after` (1 s) the new pose is trusted and only the alignment is shifted, so a FAST-LIO relocalization never makes the estimate jump. In MuJoCo (9 clean stair clips, 20 s, 0.5 cm/s drift; estimate against ground truth, max / mean): no delay z 0.14 / 0.05 m and xy 0.13 / 0.05 m; 0.1 s delay uncompensated z 0.31 / 0.11 m, xy 0.51 / 0.20 m; compensated z 0.23 / 0.05 m, xy 0.26 / 0.11 m; a 0.5 m jump of the odometry at 8 s z 0.28 / 0.13 m (a 0.2 m jump is inside the gate and followed: z 0.42 / 0.18 m).
+
+**D435i.** The map is built in the estimator's own frame, so it provides consistency over the seconds a cell stays in memory, not an absolute reference; the same idea as the FK z-anchor and the whole-map z bias of MagicLoco's perception stack. The cell update gain decays with the number of frames that saw the cell (`memory_frames`); without that the map follows the estimate's drift and feeds it back (measured: the height drifted 0.4 m in 6 s while standing).
+
+**Real robot D435i.** `depth.source: wire` receives the frames of `python3 rs_probe.py --serve` (MagicLoco `sim2real/perception/tools`) running on PC2, where the camera is plugged in (ZeroMQ port 5609, topic `cam1`, intrinsics in the header); `depth.source: realsense` opens the camera with pyrealsense2 in the same process, when ScaleBridge runs on PC2. The camera pose in the torso is the URDF `d435_joint` (`d435_in_torso()`), the map restarts at calibration. Use `localization=legged_estimator_lidar_depth` for both sensors. The wire decoding was checked in loopback against MagicLoco's own packer and the client handlers on recorded data; the camera itself was not run on hardware.
+
+**MuJoCo.** `simulator.config.lidar_odom={hz: 10, sigma: 0.01, xy_drift: 0.005, z_drift: 0.005, delay: 0.0, latency: 0.0, jump: {time: 8.0, dz: 0.5}}` emulates FAST-LIO (the LiDAR pose in a rotated and shifted odom frame, with noise and a linear drift) through the same fusion code as the robot. `simulator.config.depth_ground={hz: 10, width: 320, height: 240, fovy: 58, noise_frac: 0.01}` mounts the D435i on the torso as in the URDF and renders depth (needs `MUJOCO_GL=egl` without a display). The stock MuJoCo feet are four 5 mm spheres per foot, which catch on stair edges and make even ground-truth tracking fail; for stairs replace them by two flat discs per foot (radius 0.033 m at x = 0.1089 m and radius 0.030 m at x = -0.0355 m in the ankle roll link, half height 0.0075 m, z = -0.0275 m), which is the foot model of the policy's final training.
+
+Policy in the loop, held-out terrain clips (0.10 to 0.26 m steps, up to 4 m of climb, global tracking, lookahead `future_idx=[0,1,2,3,4,16]`), pelvis world error below 0.5 m over the whole clip (below 1 m in brackets), ten clips; clip L7_r0_e1719 fails even with ground truth, so 9 is the ceiling:
+
+| Position source | Clips passed |
+| --- | --- |
+| ground truth | 9 (9) |
+| default estimator | 0 (0) |
+| `legged_estimator_stairs` | 3 (6) |
+| `legged_estimator_depth` | 5 (8) |
+| `legged_estimator_lidar`, ideal LiDAR (1 cm noise, no drift) | 9 (9) |
+| `legged_estimator_lidar`, 0.5 cm/s drift in x, y, z | 8 (8) |
+| `legged_estimator_lidar`, 2 cm/s drift | 2 (5) |
+| `legged_estimator_depth` plus LiDAR with 0.5 cm/s drift | 8 (8) |
+
+The LiDAR fusion must be combined with a variant that has no flat-ground height; with the default estimator it passed 0 of 10. Not modelled: real FAST-LIO behaviour on stairs, real depth noise and holes. Without a LiDAR the cleanest route on stairs is `legged_estimator_depth`; with one, fuse it.

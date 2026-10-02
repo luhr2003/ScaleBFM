@@ -1,0 +1,24 @@
+# Legged state estimator for terrain with steps (stairs, curbs, slopes); use with localization=legged_estimator_stairs.
+# Same estimator as legged_estimator, with three changes (everything else is inherited):
+#  - contact_height_sensor_noise: 100  The default measures every planted foot at z = 0 (flat ground), which pins the
+#      pelvis height to the floor level at the start and loses the whole climb on stairs. A huge noise removes that
+#      measurement, so the height follows the stance foot through leg kinematics instead.
+#  - contact_zmp_length_x/y            The center-of-pressure window is widened from 0.08 x 0.025 m to the real sole
+#      (0.10 x 0.04 m). On stair edges the heel or toe carries the load, the center of pressure leaves the old window and the
+#      contact is vetoed even when the foot carries the full weight.
+#  - contact_force_threshold: 100      A planted foot is detected at lower load (default 150 N), so contact rarely drops
+#      out between steps.
+# Without an absolute height reference the height drifts slowly (about 5 to 10 percent of the climbed height in simulation),
+# so it is adequate for a few flights of stairs, not for long runs. Do NOT use it for running: with flight phases and no
+# flat-ground height it let the robot fall in the MuJoCo jog test, so keep the default config for flat ground.
+# Experimental: in MuJoCo with the policy in the loop it passed 3 of 10 stair clips (ground-truth position: 9 of 10, default
+# estimator: 0 of 10); see docs/legged_estimator.md section 10.
+defaults:
+  - legged_estimator
+  - _self_
+
+estimator:
+  contact_height_sensor_noise: 100.0
+  contact_zmp_length_x: 0.10
+  contact_zmp_length_y: 0.04
+  contact_force_threshold: 100.0

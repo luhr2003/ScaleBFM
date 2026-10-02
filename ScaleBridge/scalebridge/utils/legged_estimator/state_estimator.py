@@ -22,6 +22,10 @@ class LeggedStateEstimator:
         self.gm_observer = GmObserver(self.model, cutoff_frequency)
         self.kalman_filter = LinearKalmanFilter(self.model, LinearKalmanFilterConfig(**kalman_filter_config))
         self.initialized = False
+        # Optional callable(foot_positions) -> list of ground heights (None = unknown), e.g. DepthGroundHeight.foot_heights.
+        self.ground_height = None
+        self.time = 0.0  # seconds of sensor time accumulated by update(); the clock of the fusion modules
+        self.update_hooks = []  # callables run at the end of every update (after the base state is written back)
 
     @property
     def joint_names(self):
@@ -61,6 +65,7 @@ class LeggedStateEstimator:
         if dt <= 0.0 or not all(np.all(np.isfinite(x)) for x in inputs):
             return self.position
 
+        self.time += dt
         self.set_sensors(joint_pos, joint_vel, joint_tau, quat_wxyz, gyro)
         if not self.initialized:
             self.reset()
@@ -70,6 +75,9 @@ class LeggedStateEstimator:
         self.kalman_filter.set_contact_wrenches(self.gm_observer.get_contact_wrenches())
         self.kalman_filter.set_acceleration_local(acc)
         self.kalman_filter.update_imu_process(dt)
+        if self.ground_height is not None:
+            foot_positions = [self.model.get_frame_placement(f).translation for f in self.model.end_effector_frame_ids]
+            self.kalman_filter.set_feet_heights(self.ground_height(foot_positions))
         self.kalman_filter.update_contacts_measurement(dt)
 
         if not (np.all(np.isfinite(self.kalman_filter.x_hat)) and np.all(np.isfinite(self.kalman_filter.p))):
@@ -77,6 +85,8 @@ class LeggedStateEstimator:
             self.gm_observer.reset()
             self.reset()
         self._write_base_state()
+        for hook in self.update_hooks:
+            hook()
         return self.position
 
     def update_position_measurement(self, dt, position):

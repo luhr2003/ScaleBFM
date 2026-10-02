@@ -24,6 +24,7 @@ setup(
     "loguru",
     "rich",
     "lcm",
+    "pyzmq",
     "empy",
     "catkin_pkg",
     "ipdb",

@@ -22,7 +22,8 @@ class LinearKalmanFilterConfig:
     contact_force_scale: float = 15.0
     contact_zmp_length_x: float = 0.08
     contact_zmp_length_y: float = 0.025
-    position_noise_density: float = 1e-2
+    position_noise_density: float = 1e-2  # xy of an external position measurement
+    position_noise_density_z: float = 1e-2  # z of an external position measurement
 
 
 class LinearKalmanFilter:
@@ -60,12 +61,19 @@ class LinearKalmanFilter:
 
         self.acceleration_local = np.zeros(3)
         self.contact_wrenches = [np.zeros(6) for _ in range(self.num_contacts)]
-        self.feet_heights = np.zeros(self.num_contacts)  # never updated upstream: flat ground
+        self.feet_heights = np.zeros(self.num_contacts)  # ground height under each foot; zero (flat ground) unless set
+        self.feet_heights_valid = np.ones(self.num_contacts, dtype=bool)  # False: no height measurement for this foot
         self.contact_probabilities = np.zeros(self.num_contacts)
         self.zmps = [np.zeros(2) for _ in range(self.num_contacts)]
 
         self.x_hat = np.zeros(self.num_state)
         self.p = np.zeros((self.num_state, self.num_state))
+
+    def set_feet_heights(self, heights):
+        """Ground height under each foot in the world frame; None marks an unknown height (no measurement)."""
+        for i, height in enumerate(heights):
+            self.feet_heights_valid[i] = height is not None and np.isfinite(height)
+            self.feet_heights[i] = height if self.feet_heights_valid[i] else 0.0
 
     def set_acceleration_local(self, acceleration_local):
         self.acceleration_local = np.asarray(acceleration_local, dtype=np.float64)
@@ -142,6 +150,8 @@ class LinearKalmanFilter:
             scale = self.contact_probabilities[i] + self.HIGH_SUSPECT_NUMBER
             r[3 * i:3 * i + 3, 3 * i:3 * i + 3] /= scale
             r[self.dim_contacts + i, self.dim_contacts + i] /= scale
+            if not self.feet_heights_valid[i]:
+                r[self.dim_contacts + i, self.dim_contacts + i] *= 1e8
             relative_positions[3 * i:3 * i + 3] = base_position - self.legged_model.get_frame_placement(frame_id).translation
             relative_positions[3 * i + 2] += cfg.contact_radius
 
@@ -158,7 +168,7 @@ class LinearKalmanFilter:
 
     def update_position_measurement(self, dt, position):
         """Fuse an external base-position measurement (e.g. motion capture or LiDAR odometry)."""
-        r = self.cfg.position_noise_density ** 2 * dt * np.eye(3)
+        r = dt * np.diag([self.cfg.position_noise_density ** 2, self.cfg.position_noise_density ** 2, self.cfg.position_noise_density_z ** 2])
         innovation = np.asarray(position, dtype=np.float64) - self.c_position @ self.x_hat
         gain = self.get_kalman_gain(self.c_position, r)
         self.x_hat = self.x_hat + gain @ innovation

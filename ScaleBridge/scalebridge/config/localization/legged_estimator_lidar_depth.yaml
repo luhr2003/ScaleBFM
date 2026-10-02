@@ -1,0 +1,6 @@
+# Legged state estimator with both a LiDAR odometry (FAST-LIO on the Mid-360, absolute pose) and a D435i depth camera
+# (ground height under the feet). See legged_estimator_lidar.yaml and legged_estimator_depth.yaml.
+defaults:
+  - legged_estimator_lidar
+  - legged_estimator_depth
+  - _self_
