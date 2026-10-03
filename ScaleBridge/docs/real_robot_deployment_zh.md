@@ -40,6 +40,8 @@
 
 `ScaleTrack/checkpoints/README.md` 推荐地形用 **`ft_v2_soupA_it26000-27000.pt`**（26000 到 27000 迭代的权重平均）：留出地形 mode 7 全局成功率 83.8%（预训练 16.3%），平地 26 种配置没有退化。`ft_v2_it25200.pt` 是 MagicSim 闭环验证过的单个检验点。`ft_v3_it26800.pt`（已入库 `ScaleTrack/checkpoints/`）门限更高（留出地形 mode 7 全局 87.1%，平地无退化），但还没做 MagicSim 闭环验证，我也没有在 MuJoCo 里测过它（测过的是 soupA 和 `ft_v2_it26400`）。
 
+> 更新（2026-10-03）：`ScaleTrack/checkpoints/README.md` 现在推荐最终检验点 **`ft_v4_soupV4a_it28300-28600.pt`**（留出地形 mode 7 全局成功率 87.7%，三个评测种子均值；平地全测试集没有退化；深蹲比预训练模型更深）。它还没有在 MuJoCo 和实机上测过，本手册里的数字都是 soupA 的。想稳妥就继续用 soupA；换成 V4a 时按 2.2 节重新编译，先在 MuJoCo 里把台阶和平地各走一遍。
+
 ### 2.2 编译成 TensorRT
 
 TensorRT 文件和平台、显卡绑定，不能互相拷贝。Python 3.11，`torch==2.8.0`，`torch-tensorrt==2.8.0`。

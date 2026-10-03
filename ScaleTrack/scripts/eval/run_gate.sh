@@ -26,7 +26,8 @@ python scripts/eval/eval_modes.py --headless --checkpoint $CKPT --motion_file $Y
   $B --modes $MODES --tracking $TRACKING --seed $SEED --out $OUT/bones_${LEVEL}_s${SEED}_${SUFFIX}.json --per_clip $OUT/bones_${LEVEL}_s${SEED}_${SUFFIX}.npz "$@" || exit 1
 fi
 if [[ " $SETS " == *" ours "* ]]; then
-python scripts/eval/eval_modes.py --headless --checkpoint $CKPT --motion_file $YAML/test_ours.yaml \
+OURS_YAML=$YAML/test_ours.yaml; [ "$LEVEL" != quick ] && OURS_YAML=$YAML/test_ours_clean.yaml  # the full Ours set has one corrupt file (LegsApart_LegsApart_SW); the quick subsets are kept so that old baselines stay paired
+python scripts/eval/eval_modes.py --headless --checkpoint $CKPT --motion_file $OURS_YAML \
   $O --modes $MODES --tracking $TRACKING --seed $SEED --out $OUT/ours_${LEVEL}_s${SEED}_${SUFFIX}.json --per_clip $OUT/ours_${LEVEL}_s${SEED}_${SUFFIX}.npz "$@" || exit 1
 fi
 echo GATE_DONE

@@ -56,6 +56,13 @@ class LayoutMotionCommand(MotionCommand):
         self.clip_layout = torch.tensor(clip_layout, dtype=torch.long)  # CPU, (num_clips,)
         self.clip_max_step = torch.tensor(clip_max_step, dtype=torch.float)  # highest step on the clip's path (m)
         self.clip_is_terrain = self.clip_layout >= 0
+        # anchor-free clips (squat references): flat clips that are excluded from the KL anchor to the pretrained policy
+        prefix = cfg.anchor_free_clip_prefix
+        self.clip_anchor_free = torch.tensor([bool(prefix) and n.startswith(prefix) for n in self.motion_names_train], dtype=torch.bool)
+        self.clip_anchor_free_dev = self.clip_anchor_free.to(self.device)
+        if prefix:
+            print(f"[terrain] {int(self.clip_anchor_free.sum())} anchor-free clips (prefix '{prefix}'), "
+                  f"share of the flat-group samples {cfg.anchor_free_share}", flush=True)
         n_terrain_clips = int(self.clip_is_terrain.sum())
         n_flat_clips = int((~self.clip_is_terrain).sum())
         terrain_frac = cfg.terrain_env_fraction if n_terrain_clips > 0 else 0.0
@@ -105,6 +112,11 @@ class LayoutMotionCommand(MotionCommand):
     def _sample_clips(self, terrain: bool, n: int) -> torch.Tensor:
         mask = self.clip_is_terrain if terrain else ~self.clip_is_terrain
         w = self.motion_sampling_prob * mask.float()
+        if not terrain and self.cfg.anchor_free_share > 0 and bool(self.clip_anchor_free.any()):
+            free = self.clip_anchor_free.float()
+            w_free, w_rest = w * free, w * (1.0 - free)
+            share = self.cfg.anchor_free_share
+            w = w_rest / w_rest.sum().clamp_min(1e-12) * (1.0 - share) + w_free / w_free.sum().clamp_min(1e-12) * share
         if terrain:
             allowed = w * (self.clip_max_step <= self.terrain_step_cap()).float()
             if allowed.sum() > 0:  # clips of low relief (flat, slopes, rough) have max_step 0 and are always allowed
@@ -310,6 +322,10 @@ class LayoutMotionCommandCfg(MotionCommandCfg):
     """Probability that a flat-group env runs an episode with reference forcing (0: never, e.g. evaluation)."""
     local_forcing_prob_terrain: float = 0.0
     """Same for terrain-group envs."""
+    anchor_free_clip_prefix: str = ""
+    """Names of flat clips starting with this prefix are 'anchor-free' (obs group value 2): the KL anchor to the pretrained policy ignores them."""
+    anchor_free_share: float = 0.0
+    """Probability that a flat-group env draws one of the anchor-free clips when it draws a new clip (0: natural share)."""
     terrain_hard_boost: float = 0.0
     """Sampling weight of a terrain clip is 1 + boost * clamp((max_step - 0.10) / 0.15, 0, 1): 0 = uniform."""
     terrain_curriculum_steps: int = 0

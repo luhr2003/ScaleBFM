@@ -31,6 +31,7 @@
 - 脚模型：和 MagicSim 的 `g1_new.usd` 一致，每只脚两个平圆盘碰撞体（不是原来的 7 根细胶囊）。这点很重要，圆盘脚和胶囊脚在台阶上差别可达 10 个百分点。
 - 防退化：平地样本上对 `model_22200` 做 KL 锚定；地形课程逐步放开台阶高度；高台阶 clip 加权；一部分 episode 用参考强制（让局部跟踪也有地形经验）。
 - 检验点在 `ScaleTrack/checkpoints/`（Git LFS），`checkpoints/README.md` 有逐个检验点的门限表。`ft_v2_it25200` 是经过闭环验证的文件，`ft_v3_it26800` 和权重平均的 `soupA` 是后来的更强版本。
+- 更新（2026-10-03）：最终检验点是 `ft_v4_soupV4a_it28300-28600.pt`（留出地形 mode 7 全局 87.7%、mode 4 86.1%，三个评测种子均值；平地全测试集没有退化），成绩见 `checkpoints/README.md`。本手册里所有 MuJoCo 结果都是用 soupA 和 `ft_v2_it26400` 得到的，`soupV4a` 还没有在这里测过。
 
 ### 1.2 能到什么程度
 

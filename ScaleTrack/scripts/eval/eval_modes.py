@@ -60,6 +60,8 @@ parser.add_argument("--video_stride", type=int, default=2, help="Record every n-
 parser.add_argument("--future_idx", type=int, nargs="+", default=None,
                     help="Override the future frame offsets of the actor's task observations. Training uses 0 1 2 3 4 -1 (-1 = last frame of the clip), "
                          "the deployment export (play_export_check_humanoid_transformer*.py) uses 0 1 2 3 4 5.")
+parser.add_argument("--trace_out", type=str, default=None,
+                    help="Save the anchor (pelvis) height of the robot and of the reference per control step of every clip (use with few clips): <trace_out>.<config>.npz")
 parser.add_argument("--embedding_dim", type=int, default=None)
 parser.add_argument("--num_heads", type=int, default=None)
 parser.add_argument("--ff_dim", type=int, default=None)
@@ -261,6 +263,7 @@ def main():
                 fail_link = torch.full((num_envs,), -1.0, device=device)
                 counted = torch.zeros(num_envs, device=device)
                 frames = []
+                trace_robot_z, trace_ref_z = [], []
                 for step_i in range(max_iters):
                     obs, _, _, _ = env.step(act(obs))
                     if args_cli.video_dir and step_i % args_cli.video_stride == 0:
@@ -269,6 +272,9 @@ def main():
                     live = (elapsed <= last_counted).float()
                     cmd.time_steps -= 1  # robot state at step k <-> reference frame k
                     g_pos, g_rot, l_pos, l_rot = per_link_errors(cmd)
+                    if args_cli.trace_out:
+                        trace_robot_z.append(cmd.robot.data.body_pos_w[:n, cmd.robot_anchor_body_index, 2].cpu().numpy())
+                        trace_ref_z.append(cmd.anchor_pos_w[:n, 2].cpu().numpy())
                     cmd.time_steps += 1
                     denom = mask_f.sum()
                     sums["g_pos"] += live * (g_pos * mask_f).sum(-1) / denom
@@ -282,6 +288,9 @@ def main():
                     fail_step = torch.where(newly, elapsed.float(), fail_step)
                     fail_link = torch.where(newly, g_act.argmax(-1).float(), fail_link)
                     counted += live
+                if args_cli.trace_out and trace_robot_z:
+                    np.savez(f"{args_cli.trace_out}.{cfg_name}.npz", robot_z=np.stack(trace_robot_z), ref_z=np.stack(trace_ref_z),
+                             names=np.array(clip_names[b0 : b0 + n]))
                 if args_cli.video_dir and frames:
                     import imageio
 

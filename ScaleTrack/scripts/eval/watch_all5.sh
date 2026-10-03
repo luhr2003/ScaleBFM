@@ -90,12 +90,23 @@ ensure() {  # <tag> <ckpt> <disc> : run until all expected results exist (3 atte
   [ -z "$(missing $tag)" ]
 }
 
+squat_probe() {  # <tag> <ckpt> <disc> -> one summary line (8 planner squat clips: 4 train depths + 4 held-out validation depths)
+  local tag=$1 ck=$2 disc=$3 ev=()
+  [ "$disc" = 1 ] && ev=(SCALETRACK_ROBOT_USD=$DISC)
+  mkdir -p $EVAL/$tag
+  wait_mem
+  ( cd $ROOT && env "${ev[@]}" CUDA_VISIBLE_DEVICES=$GPU python scripts/eval/eval_modes.py --headless --checkpoint $ck \
+      --motion_file /home/vcj9002/scalebfm_ws/motions/yaml/deepsquat_all8.yaml --num_envs 8 --modes 7 4 --tracking global --seed 0 \
+      --out $EVAL/$tag/squat_s0.json --per_clip $EVAL/$tag/squat_s0.npz --trace_out $EVAL/$tag/squat_trace > $EVAL/$tag.squat.log 2>&1 )
+  python $ROOT/scripts/eval/squat_summary.py $EVAL/$tag/squat_trace
+}
+
 do_checkpoint() {  # <it>
   local it=$1 ck=$DIR/model_$1.pt T0=$(date +%s)
   local TAG=${RUN}_it${it} TAGD=${RUN}_it${it}_disc
   echo "[watch-all4] $(date +%H:%M:%S) gating $TAGD"
   ensure $TAGD $ck 1 || echo "[watch-all4] WARNING $TAGD still incomplete: $(missing $TAGD | tr '\n' ' ')"
-  echo "[watch-all4] $(date +%H:%M:%S) $TAGD ($(( $(date +%s) - T0 ))s): disc: $(summ $EVAL/base22200_disc $EVAL/$TAGD)"
+  echo "[watch-all4] $(date +%H:%M:%S) $TAGD ($(( $(date +%s) - T0 ))s): disc: $(summ $EVAL/base22200_disc $EVAL/$TAGD) | $(squat_probe $TAGD $ck 1)"
   if (( it % 800 == 0 )); then
     ensure $TAG $ck 0 || echo "[watch-all4] WARNING $TAG still incomplete: $(missing $TAG | tr '\n' ' ')"
     echo "[watch-all4] $(date +%H:%M:%S) $TAG ($(( $(date +%s) - T0 ))s): capsule: $(summ $EVAL/base22200 $EVAL/$TAG)"
