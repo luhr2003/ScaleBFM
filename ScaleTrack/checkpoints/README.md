@@ -11,6 +11,8 @@ rsl_rl format (`model_state_dict`, optimizer states, `iter`) and load exactly li
 | `ft_v2_soupA_it26000-27000.pt` | Weight average of the `ft_v2` checkpoints 26000, 26200, …, 27000. Superseded by `soupV4a`; the MuJoCo sim-to-sim checks in the ScaleBridge terrain manual were done with it, `soupV4a` has not been through them yet. |
 | `ft_v2_it25200.pt` | A single checkpoint of the first run, the one validated first in the MagicSim closed loop (planner + tracker). |
 
+Handover manual (Chinese, with commands, paths, open items): `ScaleTrack/docs/terrain_finetune_manual_zh.md`.
+
 How they were trained (see `scalebfm_terrain_training_plan.md` in the repository root for the full story, the decision log and the incidents):
 
 * 2–4 GPUs, 2048 envs each, from `model_22200`, PPO with a fixed small actor learning rate and a KL anchor to `model_22200` on the flat rehearsal
@@ -71,11 +73,27 @@ Notes
 * The last future offset of the actor is drawn at random in 5..32 frames during training (the `-1` entry of `future_idx`). Fixed values on the terrain
   gate (measured on `ft_v2_it25200`): K=5 (the offsets `[0..5]` of the standard export) 73.9 %, K=10 80.0 %, **K=16 82.5 %**, K=24 81.1 %,
   K=32 80.4 %: use K=16 for stairs if the planner can provide a lookahead frame.
-* Weak point that remains: ascending steps of 0.26 m and more. MagicSim closed loop (MagicLoco terrain planner on a ghost G1, ScaleBFM as tracker, mode 7,
-  true root pose, 8 randomised draws per cell): no falls for 0.08–0.22 m stairs; 0.26 m up, planner not waiting for the tracker: 6/8 falls with
-  `ft_v2_it25200`, 4/8 with the `ft_v3` average (`soupV3a`), 1/8 with either when the planner waits for the tracker (the planner alone: 0/8). A blind
-  tracker is probably near its limit here; the next step would be a height-scan input (changes the network input and the deployment interface). The
-  closed-loop runs of `soupV4a` (tall steps and the deep-squat planner runs) are in progress in the MagicSim session; this file will be updated.
+* MagicSim closed loop (MagicLoco terrain planner on a ghost G1, ScaleBFM as tracker, mode 7, true root pose, K=16, `MeshPyramidStairs` with 0.30 m
+  treads, 8 randomised draws per cell, 16 s). A draw is a fall if the tilt exceeds 60°, or the pelvis stays below 0.45 m above the ground for more than
+  0.5 s, or the final pelvis height above the ground is below 0.5 m (`fell_pose` of the MagicSim harness; "ok" = no fall and at least 75 % of the planner's
+  climb). The harness's older flag "pelvis < 0.40 m above the ground under it" gives false alarms when descending stairs: `soupV4a` dips to 0.36–0.39 m
+  for a moment at the first step edge in 5 of 8 draws, because its pelvis follows the planner's pre-step crouch more closely, but it ends upright at the
+  planner's height in all 8.
+
+  | fell / stuck / ok out of 8 | `ft_v2_it25200` | `soupV3a` (average of `ft_v3` 26400..27000) | **`soupV4a`** |
+  |---|---|---|---|
+  | 0.26 m up, planner does not wait for the tracker | 6 / 0 / 2 | 4 / 0 / 4 | **0 / 0 / 8** |
+  | 0.26 m up, planner waits for the tracker (leash) | 1 / 1 / 6 | 1 / 0 / 7 | **0 / 0 / 8** |
+  | 0.26 m down, planner does not wait | 1 / 0 / 7 | 2 / 0 / 6 | **0 / 0 / 8** |
+  | 0.22 m up, planner does not wait | 0 / 0 / 8 | 0 / 0 / 8 | **0 / 0 / 8** |
+
+  Deep squat in the closed loop (K=8, 17 s; lowest pelvis of the tracker minus the lowest pelvis of the planner's ghost, ideal 0): held-out planner depths
+  0.315 / 0.262 / 0.222 / 0.205 m: `soupV4a` +2.1 / +2.6 / +4.1 / +4.8 cm, `ft_v2_it25200` +6.4 / +6.9 / +8.7 / +9.1 cm; the planner's 0.20 m squat now
+  bottoms out at 0.25 m instead of 0.29 m (in line with the open-loop squat table above).
+* Not measured yet in the closed loop: 0.30 m steps, the deployment offsets K=5, other terrain types. In the open-loop gate the steps of 0.25–0.31 m
+  still fail in about 19 % of the clips (20 s of global tracking, any link beyond 0.5 m). If 0.30 m shows falls, the next step would be a height-scan
+  input (changes the network input and the deployment interface).
+* Deployment offsets K=5 (`[0..5]`, open-loop quick terrain gate, seed 0, global tracking): `soupV4a` mode 7 82.7 %, mode 4 81.0 % (pretrained 16.1 % / 13.3 %, `ft_v2_it25200` 73.9 % / 74.2 %). The K=5 flat gate was started but not finished, so "no regression at K=5" is not established yet.
 * Export: use `scripts/pretrain/rsl_rl/play_export_check_humanoid_transformer.py` on the **original** asset (the kinematic tree is identical, the
   exporter reads the MJCF next to the asset), it needs `torch_tensorrt`.
 * Reproduce the gates: `scripts/eval/eval_seed.sh <checkpoint> <tag> <seed> <1 = disc feet>` (needs the disc-feet asset from

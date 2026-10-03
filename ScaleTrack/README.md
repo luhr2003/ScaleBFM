@@ -430,6 +430,7 @@ tracking, verified result files, waits for free GPU memory before every evaluati
 Deep squats: `eval_modes.py --trace_out` records the pelvis height of the robot and of the reference, `scripts/eval/squat_summary.py` turns it into the
 "pelvis above reference" numbers; `scripts/data/make_squat_aug.py` builds the squat training clips (speed and heading variants) that the terrain command
 samples without the KL anchor (`anchor_free_clip_prefix` / `anchor_free_share`).
+Handover manual (Chinese): `docs/terrain_finetune_manual_zh.md`.
 The fine-tuned checkpoints (recommended: `ft_v4_soupV4a_it28300-28600.pt`) and their gate results are in `checkpoints/`; the full write-up is
 `../scalebfm_terrain_training_plan.md`.
 

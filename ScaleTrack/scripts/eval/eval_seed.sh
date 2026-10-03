@@ -1,9 +1,11 @@
 #!/bin/bash
 # Full quick gate (held-out terrain global + local, flat 26 configs in the baseline's two-part structure) of ONE checkpoint file for ONE evaluation
 # seed, with start-up staggering and result-file verification (retries). Used for multi-seed comparisons of final candidates against the base model.
-# usage: eval_seed.sh <abs checkpoint> <tag> <seed> <disc 1 | capsule 0> [gpu=4]
+# usage: [EVAL_ARGS="--future_idx 0 1 2 3 4 5"] eval_seed.sh <abs checkpoint> <tag> <seed> <disc 1 | capsule 0> [gpu=4]
+#   EVAL_ARGS: extra arguments for eval_modes.py (e.g. the deployment future offsets), use a different <tag> for them
 #   results: /home/vcj9002/scalebfm_ws/runs/eval/<tag>/{terrain,bones,ours}_quick_s<seed>_{a,b}.json
 CKPT=$1; TAG=$2; SEED=$3; DISCFEET=$4; GPU=${5:-4}
+XA=(); [ -n "$EVAL_ARGS" ] && read -ra XA <<< "$EVAL_ARGS"
 ROOT=/home/vcj9002/magicloco/ScaleBFM/ScaleTrack
 EVAL=/home/vcj9002/scalebfm_ws/runs/eval
 DISC=/home/vcj9002/scalebfm_ws/assets/g1_29dof_discfeet/g1_29dof_discfeet.usda
@@ -27,22 +29,22 @@ launch_missing() {
   local m=" $(missing | tr '\n' ' ') "
   if [[ $m == *" terrain_quick_s${SEED}_a "* ]]; then
     wait_mem
-    env "${EV[@]}" MODES="7 4" TRACKING=global SUFFIX=a $ROOT/scripts/eval/run_terrain_gate.sh $CKPT $TAG $GPU quick $SEED > $EVAL/$TAG.s$SEED.terrain_g.log 2>&1 &
+    env "${EV[@]}" MODES="7 4" TRACKING=global SUFFIX=a $ROOT/scripts/eval/run_terrain_gate.sh $CKPT $TAG $GPU quick $SEED "${XA[@]}" > $EVAL/$TAG.s$SEED.terrain_g.log 2>&1 &
     sleep 15
   fi
   if [[ $m == *" terrain_quick_s${SEED}_b "* ]]; then
     wait_mem
-    env "${EV[@]}" MODES="7 4" TRACKING=local SUFFIX=b $ROOT/scripts/eval/run_terrain_gate.sh $CKPT $TAG $GPU quick $SEED > $EVAL/$TAG.s$SEED.terrain_l.log 2>&1 &
+    env "${EV[@]}" MODES="7 4" TRACKING=local SUFFIX=b $ROOT/scripts/eval/run_terrain_gate.sh $CKPT $TAG $GPU quick $SEED "${XA[@]}" > $EVAL/$TAG.s$SEED.terrain_l.log 2>&1 &
     sleep 15
   fi
   if [[ $m == *" bones_quick_s${SEED}_a "* || $m == *" ours_quick_s${SEED}_a "* ]]; then
     wait_mem
-    env "${EV[@]}" MODES="0 1 2 3" SUFFIX=a $ROOT/scripts/eval/run_gate.sh $CKPT $TAG $GPU quick $SEED > $EVAL/$TAG.s$SEED.gate_a.log 2>&1 &
+    env "${EV[@]}" MODES="0 1 2 3" SUFFIX=a $ROOT/scripts/eval/run_gate.sh $CKPT $TAG $GPU quick $SEED "${XA[@]}" > $EVAL/$TAG.s$SEED.gate_a.log 2>&1 &
     sleep 15
   fi
   if [[ $m == *" bones_quick_s${SEED}_b "* || $m == *" ours_quick_s${SEED}_b "* ]]; then
     wait_mem
-    env "${EV[@]}" MODES="4 5 6 7" SUFFIX=b $ROOT/scripts/eval/run_gate.sh $CKPT $TAG $GPU quick $SEED > $EVAL/$TAG.s$SEED.gate_b.log 2>&1 &
+    env "${EV[@]}" MODES="4 5 6 7" SUFFIX=b $ROOT/scripts/eval/run_gate.sh $CKPT $TAG $GPU quick $SEED "${XA[@]}" > $EVAL/$TAG.s$SEED.gate_b.log 2>&1 &
     sleep 15
   fi
 }
