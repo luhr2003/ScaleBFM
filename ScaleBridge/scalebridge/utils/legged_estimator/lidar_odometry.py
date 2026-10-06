@@ -101,8 +101,10 @@ class LidarOdometryFusion:
         if not self._aligned:
             quat = np.asarray(lidar_quat_wxyz, dtype=np.float64)
             rotation_odom = pin.Quaternion(quat[0], quat[1], quat[2], quat[3]).toRotationMatrix()
-            self._yaw = yaw_of(stamped_rotation) - yaw_of(rotation_odom)
-            self._rotation = rot_z(self._yaw)
+            # Full rotation, not yaw only: FAST-LIO's odom frame is the LiDAR body frame at its start, which is not gravity
+            # aligned (upside down with the G1's inverted Mid-360); the estimator's LiDAR rotation (IMU + kinematics) is.
+            self._rotation = stamped_rotation @ rotation_odom.T
+            self._yaw = yaw_of(self._rotation)
             self._odom_origin = lidar_position.copy()
             self._estimator_origin = stamped_position.copy()
             self._aligned = True

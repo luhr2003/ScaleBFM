@@ -163,6 +163,11 @@ class MujocoSimulator(BaseSimulator):
         yaw, shift = cfg.get('odom_yaw', 0.7), np.array(cfg.get('odom_origin', [3.0, -2.0, 1.0]), dtype=np.float64)
         self.lidar_odom_rotation = np.array([[np.cos(yaw), -np.sin(yaw), 0.0], [np.sin(yaw), np.cos(yaw), 0.0], [0.0, 0.0, 1.0]])
         self.lidar_odom_shift = shift
+        # body_frame_odom: like the real FAST-LIO, the odom frame is the LiDAR body pose at its first sample (not gravity
+        # aligned: upside down with the G1's inverted Mid-360) instead of a yaw-rotated, shifted gravity-aligned frame
+        self.lidar_body_frame_odom = bool(cfg.get('body_frame_odom', False))
+        if self.lidar_body_frame_odom:
+            self.lidar_odom_rotation, self.lidar_odom_shift = None, None
         direction = self.lidar_rng.normal(size=2)
         self.lidar_drift_xy = cfg.get('xy_drift', 0.0) * direction / np.linalg.norm(direction)
         self.lidar_drift_z = cfg.get('z_drift', 0.0)
@@ -179,6 +184,9 @@ class MujocoSimulator(BaseSimulator):
         rotation_torso = data.xmat[self.torso_body_id].reshape(3, 3)
         position = data.xpos[self.torso_body_id] + rotation_torso @ self.lidar_in_torso[0]
         rotation = rotation_torso @ self.lidar_in_torso[1]
+        if self.lidar_body_frame_odom and self.lidar_odom_rotation is None:
+            self.lidar_odom_rotation = rotation.T.copy()
+            self.lidar_odom_shift = -rotation.T @ position
         t = data.time - self.lidar_t0
         position = self.lidar_odom_rotation @ position + self.lidar_odom_shift
         position = position + np.array([*(self.lidar_drift_xy * t), self.lidar_drift_z * t]) + self.lidar_rng.normal(0.0, self.lidar_sigma, 3)
