@@ -3,6 +3,7 @@ sys.path.append("./")
 
 import lcm
 import time
+import queue
 import torch
 import select
 import threading
@@ -68,6 +69,10 @@ class RealWorld(BaseSimulator):
         
         self.run_thread = threading.Thread(target=self._poll, daemon=False)
         self.run_thread.start()
+
+        # Keyboard alternative to R2 in calibrate(): lines typed in this terminal are queued here
+        self.keyboard_lines = queue.Queue()
+        threading.Thread(target=self._read_keyboard, daemon=True).start()
 
         logger.info(f"[Simulator] Waiting for the first robot state signal to arrive ...")
         while not self.firstReceiveRobotState:
@@ -159,13 +164,10 @@ class RealWorld(BaseSimulator):
     def calibrate(self, init_state_dict={}):
         assert not init_state_dict, f"Current code does not support reference state initialization for real-world deployment."
 
-        logger.info('[Simulator] Calibraiting..., Press R2 to continue')
-        while True:
-            if self.right_lower_right_switch_pressed:
-                logger.info('[Simulator] R2 button pressed, Start Calibrating...')
-                self.right_lower_right_switch_pressed = False
-                break
-        
+        logger.info('[Simulator] Calibraiting..., Press R2 (or Enter here) to continue')
+        self._wait_for_r2_or_keyboard(expected='')
+        logger.info('[Simulator] Start Calibrating...')
+
         root_quat = self.root_quat_tmp.copy()
         if self.localization_module:
             self.localization_module.calibrate(root_quat)
@@ -173,14 +175,35 @@ class RealWorld(BaseSimulator):
         else:
             root_pos = np.zeros((3,), dtype=np.float32)
         
-        logger.info('[Simulator] Calibration Done. Press R2 to continue')
-        while True:
-            if self.right_lower_right_switch_pressed:
-                logger.info('[Simulator] R2 pressed again, Communication built between policy layer and transition layer!')
-                self.right_lower_right_switch_pressed =  False
-                break
+        logger.info('[Simulator] Calibration Done. Press R2 (or type "start" + Enter here) to start the policy')
+        self._wait_for_r2_or_keyboard(expected='start')
+        logger.info('[Simulator] Communication built between policy layer and transition layer!')
 
         return root_pos, root_quat
+
+    def _read_keyboard(self):
+        for line in sys.stdin:
+            self.keyboard_lines.put(line.strip().lower())
+
+    def _wait_for_r2_or_keyboard(self, expected):
+        # Accept the remote's R2 or a typed line equal to `expected` ('' = just Enter).
+        # Lines typed before this step are discarded so an early keypress cannot skip a step.
+        while not self.keyboard_lines.empty():
+            self.keyboard_lines.get_nowait()
+        self.right_lower_right_switch_pressed = False
+        while True:
+            if self.right_lower_right_switch_pressed:
+                logger.info('[Simulator] R2 button pressed.')
+                self.right_lower_right_switch_pressed = False
+                return
+            try:
+                line = self.keyboard_lines.get(timeout=0.01)
+            except queue.Empty:
+                continue
+            if line == expected:
+                logger.info(f'[Simulator] Keyboard confirmation received ({"Enter" if not expected else expected}).')
+                return
+            logger.info(f'[Simulator] Ignored "{line}"; press R2 or {"Enter" if not expected else "type " + repr(expected) + " + Enter"}.')
 
     def apply_action(self, tgt_dof_pos):
         tgt_dof_pos = tgt_dof_pos.squeeze()
