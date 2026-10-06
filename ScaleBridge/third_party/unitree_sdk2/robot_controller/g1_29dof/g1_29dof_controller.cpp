@@ -27,9 +27,14 @@ The left side represents the direction from up to down and the right side is the
 // General Headers
 
 // Standard Content
+#include <atomic>
+#include <csignal>
 #include <cmath>
+#include <iostream>
 #include <memory>
+#include <string>
 #include <thread>
+#include <unistd.h>
 #include <lcm/lcm-cpp.hpp>
 
 // Unitree
@@ -38,6 +43,7 @@ The left side represents the direction from up to down and the right side is the
 #include <unitree/idl/hg/LowCmd_.hpp>
 #include <unitree/idl/hg/LowState_.hpp>
 #include <unitree/idl/go2/SportModeState_.hpp>
+#include <unitree/robot/b2/motion_switcher/motion_switcher_client.hpp>
 #include "unitree/common/thread/thread.hpp"
 
 // LCM
@@ -52,6 +58,17 @@ The left side represents the direction from up to down and the right side is the
 static const std::string HG_CMD_TOPIC = "rt/lowcmd";
 static const std::string HG_STATE_TOPIC = "rt/lowstate";
 #define TOPIC_SPORT_STATE "rt/odommodestate"
+
+// Emergency damping: set by Enter in this terminal, the first Ctrl+C, or L2 + B on the remote.
+// Once set, every cycle publishes kp = 0 / kd = DAMPING_KD so the robot sinks slowly instead of holding its last command.
+static std::atomic<bool> g_damping{false};
+static std::atomic<int> g_sigint_count{0};
+static const float DAMPING_KD = 10.0f;
+
+static void sigintHandler(int) {
+  if (++g_sigint_count >= 2) _exit(0);  // second Ctrl+C: leave immediately
+  g_damping = true;
+}
 
 uint32_t Crc32Core(uint32_t *ptr, uint32_t len) {
   uint32_t xbit = 0;
@@ -117,15 +134,14 @@ class RobotController {
 
 
     public:
-        RobotController(std::string networkInterface): 
+        RobotController():
             time_(0.0),
-            control_dt_(0.005), // 200HZ 
+            control_dt_(0.005), // 200HZ
             duration_(5.0), //time for moving to default pose
             mode_(PR), // ankle control mode
             mode_machine_(0)
         {
-            // Init network connection
-            unitree::robot::ChannelFactory::Instance()->Init(0, networkInterface);
+            // Network connection is initialised in main() so the built-in motion service can be released first
 
             set_default_state();
     
@@ -278,7 +294,26 @@ class RobotController {
             low_cmd.mode_pr() = mode_;
             low_cmd.mode_machine() = mode_machine_;
 
-            if(time_ < duration_){
+            if ((int) remote_key_data.btn.components.B == 1 && (int) remote_key_data.btn.components.L2 == 1)
+                g_damping = true;
+
+            if (g_damping) {
+                static bool announced = false;
+                for (int i = 0; i < NUM_MOTOR; i++) {
+                    low_cmd.motor_cmd()[i].mode() = 1;
+                    low_cmd.motor_cmd()[i].q() = 0;
+                    low_cmd.motor_cmd()[i].dq() = 0;
+                    low_cmd.motor_cmd()[i].kp() = 0;
+                    low_cmd.motor_cmd()[i].kd() = DAMPING_KD;
+                    low_cmd.motor_cmd()[i].tau() = 0;
+                }
+                if (!announced) {
+                    announced = true;
+                    std::cout << "Switched to Damping Mode! Policy commands are ignored. Press Ctrl+C again to exit." << std::endl;
+                }
+            }
+
+            else if(time_ < duration_){
                 time_ += control_dt_;
                 
                 float ratio = time_ / duration_;
@@ -306,40 +341,12 @@ class RobotController {
                     _firstRun = false;
                 }
 
-                if(((int) remote_key_data.btn.components.B ==1 && (int) remote_key_data.btn.components.L2 == 1)){
-                    for(int i=0; i<NUM_MOTOR; i++){
-                        low_cmd.motor_cmd()[i].q() = 0;
-                        low_cmd.motor_cmd()[i].dq() = 0;
-                        low_cmd.motor_cmd()[i].kp() = 0;
-                        low_cmd.motor_cmd()[i].kd() = 10;
-                        low_cmd.motor_cmd()[i].tau() = 0;
-                    }
-                    
-                    std::cout << "Switched to Damping Mode!" << std::endl;
-                    sleep(1.5);
-
-                    while(true){
-                        
-                        if((int) remote_key_data.btn.components.B ==1 && (int) remote_key_data.btn.components.L2 == 1) {
-                            std::cout << "L2+B is pressed again, Exit!" << std::endl;
-                            exit(0);
-                        }
-
-                        else{
-                            std::cout<<"Press L2+B again to exit!" <<std::endl;
-                            sleep(0.01);
-                        }
-                    }
-                }
-
-                else{
-                    for(int i=0; i<NUM_MOTOR; i++){
-                        low_cmd.motor_cmd()[i].q() = robot_cmd_simple.q_des[i];
-                        low_cmd.motor_cmd()[i].dq() = robot_cmd_simple.qd_des[i];
-                        low_cmd.motor_cmd()[i].kp() = robot_cmd_simple.kp[i];
-                        low_cmd.motor_cmd()[i].kd() = robot_cmd_simple.kd[i];
-                        low_cmd.motor_cmd()[i].tau() = robot_cmd_simple.tau_ff[i];
-                    }
+                for(int i=0; i<NUM_MOTOR; i++){
+                    low_cmd.motor_cmd()[i].q() = robot_cmd_simple.q_des[i];
+                    low_cmd.motor_cmd()[i].dq() = robot_cmd_simple.qd_des[i];
+                    low_cmd.motor_cmd()[i].kp() = robot_cmd_simple.kp[i];
+                    low_cmd.motor_cmd()[i].kd() = robot_cmd_simple.kd[i];
+                    low_cmd.motor_cmd()[i].tau() = robot_cmd_simple.tau_ff[i];
                 }
             }
             
@@ -355,16 +362,55 @@ int main(int argc, char const *argv[]) {
     exit(-1);
   }
 
+  std::string networkInterface = argv[1];
+  unitree::robot::ChannelFactory::Instance()->Init(0, networkInterface);
+
+  // Release Unitree's built-in motion service (software equivalent of L2 + R2 debug mode) so it does not fight our lowcmd.
+  // The robot goes limp when released, so it must already be hung up.
+  std::cout << "Releasing the built-in motion control service (the robot will go limp; it must be hung up) ..." << std::endl;
+  unitree::robot::b2::MotionSwitcherClient msc;
+  msc.SetTimeout(5.0f);
+  msc.Init();
+  std::string form, name;
+  const int max_attempts = 10;
+  int attempt = 0;
+  while (true) {
+    int32_t ret = msc.CheckMode(form, name);
+    if (ret != 0) {
+      std::cout << "CheckMode failed (error " << ret << "); is the robot booted and on " << networkInterface << "?" << std::endl;
+    } else if (name.empty()) {
+      std::cout << "Built-in motion service released." << std::endl;
+      break;
+    } else {
+      std::cout << "Active motion service: '" << name << "' (form '" << form << "'); releasing ..." << std::endl;
+      ret = msc.ReleaseMode();
+      if (ret != 0)
+        std::cout << "ReleaseMode failed (error " << ret << ")" << std::endl;
+    }
+    if (++attempt >= max_attempts) {
+      std::cout << "Could not release the built-in motion service after " << max_attempts << " attempts; aborting." << std::endl;
+      return -1;
+    }
+    sleep(5);
+  }
+
   std::cout << "Make sure the robot is hung up!" << std::endl
             << "You should not run the deploy code until the robot has moved to default positions!" <<std::endl
-            << "Remote-control safety actions:" << std::endl
-            << "  Single press [L2 + B]: switch the robot to damping mode." << std::endl
-            << "  Double press [L2 + B]: terminate the controller after entering damping mode." << std::endl
+            << "Emergency damping (kp = 0, the robot sinks slowly), once running:" << std::endl
+            << "  [Enter] in this terminal, the first [Ctrl+C], or [L2 + B] on the remote." << std::endl
+            << "  A second [Ctrl+C] exits the controller (motor commands stop)." << std::endl
             << "Press Enter to continue ..." <<std::endl;
   std::cin.ignore(); // Press Enter to continue
 
-  std::string networkInterface = argv[1];
-  RobotController custom(networkInterface);
-  while (true) usleep(20000); // 0.02s
+  std::signal(SIGINT, sigintHandler);
+  RobotController custom;
+
+  // Keyboard e-stop: any line typed here (just Enter) switches to damping.
+  std::string line;
+  while (std::getline(std::cin, line)) {
+    if (!g_damping) std::cout << "Enter pressed: switching to damping." << std::endl;
+    g_damping = true;
+  }
+  while (true) usleep(20000); // stdin closed: keep the writer threads running
   return 0;
 }
