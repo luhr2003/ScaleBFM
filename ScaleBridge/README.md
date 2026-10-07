@@ -7,6 +7,9 @@ This guide covers workstation and Jetson setup, policy evaluation, policy deploy
 > [!IMPORTANT]
 > Real-robot deployment can cause sudden or unexpected motion. Keep an emergency stop within reach before launching the policy.
 
+> [!NOTE]
+> Deploying on the **CRB G1**? Follow [CRB-G1-Deploy.md](CRB-G1-Deploy.md) alongside this README. It covers that robot's extra setup: building the Livox driver and FAST-LIO in a separate `livox_ws` (without the driver's `build.sh`, which wipes the workspace), the `MID360_config.json` network settings, the FAST-LIO → ScaleBridge bridge for LiDAR-based global tracking, and the environment pitfalls we hit on that robot.
+
 ## 🧭 Table of contents
 
 - [🛠️ 1. Prepare the environment](#️-1-prepare-the-environment)
